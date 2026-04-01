@@ -67,12 +67,12 @@ export default function Analytics({ result }: { result: AnalysisResult }) {
           ]}
           layout={{
             title: { text: "Cumulative Return vs SPY", font: { size: 15, color: "#f0f0ff" } },
-            yaxis: { title: "Growth of $1", gridcolor: BORDER },
+            yaxis: { title: { text: "Growth of $1" }, gridcolor: BORDER },
             xaxis: { gridcolor: BORDER },
             legend: { orientation: "h", y: -0.2, font: { color: TXT2 } },
             shapes: [{ type: "line", x0: 0, x1: 1, xref: "paper", y0: 1, y1: 1,
               line: { color: "#555", dash: "dash", width: 1 } }],
-          }}
+          } as any}
           height={300}
         />
       </div>
@@ -96,10 +96,10 @@ export default function Analytics({ result }: { result: AnalysisResult }) {
           ]}
           layout={{
             title: { text: "Drawdown (%)", font: { size: 15, color: "#f0f0ff" } },
-            yaxis: { title: "Drawdown %", gridcolor: BORDER, ticksuffix: "%" },
+            yaxis: { title: { text: "Drawdown %" }, gridcolor: BORDER, ticksuffix: "%" },
             xaxis: { gridcolor: BORDER },
             legend: { orientation: "h", y: -0.2, font: { color: TXT2 } },
-          }}
+          } as any}
           height={280}
         />
       </div>
@@ -116,10 +116,10 @@ export default function Analytics({ result }: { result: AnalysisResult }) {
             } as any))}
             layout={{
               title: { text: "Rolling 36-Month Factor Betas", font: { size: 15, color: "#f0f0ff" } },
-              yaxis: { title: "Beta", gridcolor: BORDER, zerolinecolor: "#555" },
+              yaxis: { title: { text: "Beta" }, gridcolor: BORDER, zerolinecolor: "#555" },
               xaxis: { gridcolor: BORDER },
               legend: { orientation: "h", y: -0.2, font: { color: TXT2 } },
-            }}
+            } as any}
             height={320}
           />
         </div>

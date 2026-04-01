@@ -46,12 +46,12 @@ export default function Dashboard({ result }: { result: AnalysisResult }) {
           data={chartData}
           layout={{
             title: { text: "Cumulative Returns", font: { size: 15, color: "#f0f0ff" } },
-            yaxis: { title: "Growth of $1", gridcolor: BORDER },
+            yaxis: { title: { text: "Growth of $1" }, gridcolor: BORDER },
             xaxis: { gridcolor: BORDER },
             legend: { orientation: "h", y: -0.2, font: { color: TXT2 } },
             shapes: [{ type: "line", x0: 0, x1: 1, xref: "paper", y0: 1, y1: 1,
               line: { color: "#555", dash: "dash", width: 1 } }],
-          }}
+          } as any}
           height={360}
         />
       </div>

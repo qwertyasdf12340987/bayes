@@ -92,9 +92,9 @@ export default function TradeLog({ onLoad }: Props) {
             } as any]}
             layout={{
               title: { text: "Portfolio Value History", font: { size: 15, color: "#f0f0ff" } },
-              yaxis: { title: "Value ($)", gridcolor: BORDER, tickprefix: "$" },
+              yaxis: { title: { text: "Value ($)" }, gridcolor: BORDER, tickprefix: "$" },
               xaxis: { gridcolor: BORDER },
-            }}
+            } as any}
             height={260}
           />
         </div>

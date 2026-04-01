@@ -46,13 +46,13 @@ export default function Industry({ result }: { result: AnalysisResult }) {
             } as any]}
             layout={{
               title: { text: "Sector ETF Loadings (95% CI)", font: { size: 15, color: "#f0f0ff" } },
-              xaxis: { title: "Beta", gridcolor: BORDER, zerolinecolor: TXT2 },
+              xaxis: { title: { text: "Beta" }, gridcolor: BORDER, zerolinecolor: TXT2 },
               yaxis: { autorange: "reversed", gridcolor: BORDER },
               annotations: [{ xref: "paper", yref: "paper", x: 0.99, y: 0.02,
                 text: annotation, showarrow: false, font: { size: 11, color: TXT2 },
                 bgcolor: CARD2, bordercolor: BORDER, borderwidth: 1, borderpad: 6, align: "right",
               }],
-            }}
+            } as any}
             height={Math.max(380, factors.length * 32 + 120)}
           />
         </div>
