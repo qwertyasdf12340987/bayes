@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pyo
+trades.db
+schwab_token.json
+.env
+.claude/
