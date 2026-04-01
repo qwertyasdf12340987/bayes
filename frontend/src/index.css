@@ -1,0 +1,20 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #0a0a10; color: #f0f0ff; font-family: "Inter", system-ui, sans-serif; }
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #13131c; }
+::-webkit-scrollbar-thumb { background: #2a2a38; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #d946ef; }
+
+input, select, textarea {
+  background: #1c1c28 !important;
+  border: 1px solid #2a2a38 !important;
+  border-radius: 8px !important;
+  color: #f0f0ff !important;
+  padding: 8px 12px;
+}
+input:focus, select:focus { outline: none; border-color: #d946ef !important; }

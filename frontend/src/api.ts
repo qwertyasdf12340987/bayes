@@ -1,0 +1,72 @@
+const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+
+async function post<T>(path: string, body: unknown): Promise<T> {
+  const r = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error((await r.json()).detail ?? r.statusText);
+  return r.json();
+}
+
+async function get<T>(path: string): Promise<T> {
+  const r = await fetch(`${BASE}${path}`);
+  if (!r.ok) throw new Error((await r.json()).detail ?? r.statusText);
+  return r.json();
+}
+
+async function del(path: string) {
+  const r = await fetch(`${BASE}${path}`, { method: "DELETE" });
+  if (!r.ok) throw new Error(r.statusText);
+}
+
+export type FactorResult = {
+  alpha: number; alpha_annualized: number; alpha_tstat: number; alpha_pval: number;
+  betas: Record<string, number>; tstats: Record<string, number>; pvals: Record<string, number>;
+  r_squared: number; r_squared_adj: number; n_obs: number;
+};
+
+export type AnalysisResult = {
+  ff: { portfolio: FactorResult; stocks: Record<string, FactorResult> };
+  ind: FactorResult | null;
+  cov: Record<string, Record<string, number>>;
+  corr: Record<string, Record<string, number>>;
+  vols: Record<string, number>;
+  mrc: Record<string, number>;
+  port_vol: number;
+  port_returns: { date: string; value: number }[];
+  stock_returns: Record<string, { date: string; value: number }[]>;
+  benchmark: { date: string; value: number }[];
+  rolling_betas: { date: string; [key: string]: number | string }[];
+  sharpe: number; sortino: number; max_drawdown: number;
+  calmar: number; var95: number; cvar95: number; ann_return: number;
+};
+
+export type Trade = {
+  id: number; ticker: string; trade_date: string; action: string;
+  quantity: number; price: number; notes: string;
+};
+
+export type Position = { Ticker: string; "Net Qty": number; "Avg Cost": number; "Cost Basis": number };
+export type PnLRow = {
+  Ticker: string; "Net Qty": number; "Avg Cost": number;
+  "Current Price": number; "Market Value": number;
+  "Unrealized P&L": number; "P&L %": number;
+};
+export type HedgeRow = {
+  factor?: string; sector?: string; port_beta: number;
+  hedge_etf: string; direction: string;
+  notional: number; current_price: number | null; approx_shares: number | null;
+};
+
+export const api = {
+  analyze:        (b: object) => post<AnalysisResult>("/analyze", b),
+  hedges:         (b: object) => post<{ factor_hedges: HedgeRow[]; industry_hedges: HedgeRow[] }>("/hedges", b),
+  getTrades:      ()          => get<Trade[]>("/trades"),
+  addTrade:       (b: object) => post("/trades", b),
+  deleteTrade:    (id: number) => del(`/trades/${id}`),
+  getPortfolio:   ()          => get<{ tickers: string[]; weights: number[]; positions: Position[] }>("/portfolio"),
+  getPnl:         ()          => get<PnLRow[]>("/pnl"),
+  getPortfolioValue: ()       => get<{ date: string; value: number }[]>("/portfolio-value"),
+};
