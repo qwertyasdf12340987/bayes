@@ -265,7 +265,10 @@ class TradeDB:
             # Apply all trades on or before this day
             while trade_idx < n_trades:
                 row = trades_sorted.iloc[trade_idx]
-                if pd.Timestamp(row["trade_date"]).tz_localize(None) <= day.tz_localize(None) if day.tzinfo else pd.Timestamp(row["trade_date"]) <= day:
+                # Safely compare dates, handling timezone-aware/naive
+                trade_ts = pd.Timestamp(row["trade_date"])
+                day_cmp = day.tz_localize(None) if day.tzinfo else day
+                if trade_ts <= day_cmp:
                     t  = row["ticker"]
                     dq = row["quantity"] if row["action"] == "BUY" else -row["quantity"]
                     holdings[t] = holdings.get(t, 0) + dq
