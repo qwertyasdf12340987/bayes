@@ -4,6 +4,7 @@ Start locally: uvicorn backend_main:app --reload
 """
 
 import os
+import traceback
 from typing import List, Optional
 
 import numpy as np
@@ -127,7 +128,9 @@ def analyze(req: AnalyzeReq):
             "ann_return":    a.annualised_return(),
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        tb = traceback.format_exc()
+        print(f"ERROR in /analyze:\n{tb}")
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
 
 
 @app.post("/hedges")
@@ -142,7 +145,9 @@ def hedges(req: HedgeReq):
         ind = a.industry_analysis() if req.include_industry else None
         return a.hedge_suggestions(ff, ind, req.portfolio_value)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        tb = traceback.format_exc()
+        print(f"ERROR in /hedges:\n{tb}")
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
 
 
 # ── Trades ────────────────────────────────────────────────────────────────────
