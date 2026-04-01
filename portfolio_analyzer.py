@@ -21,11 +21,9 @@ import zipfile
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import requests
-import seaborn as sns
 import statsmodels.api as sm
 import yfinance as yf
 
