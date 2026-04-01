@@ -207,16 +207,31 @@ def get_db() -> TradeDB:
 def run_analysis(tickers_t, weights_t, start_str, end_str, include_industry):
     a = PortfolioAnalyzer(list(tickers_t), list(weights_t), start_str, end_str, "monthly")
     a.fetch_prices()
+    ff  = a.factor_analysis(include_momentum=True, per_stock=True)
+    ind = a.industry_analysis() if include_industry else None
+    bench = a.benchmark_returns("SPY")
+    mdd   = a.max_drawdown()
     return {
-        "ff":           a.factor_analysis(include_momentum=True, per_stock=True),
-        "ind":          a.industry_analysis() if include_industry else None,
-        "cov":          a.covariance_matrix(annualized=True),
-        "corr":         a.correlation_matrix(),
-        "vols":         a.stock_volatilities(),
-        "mrc":          a.marginal_risk_contributions(),
-        "port_vol":     a.portfolio_volatility(),
-        "returns":      a.returns.copy(),
-        "port_returns": a.portfolio_returns.copy(),
+        "ff":             ff,
+        "ind":            ind,
+        "cov":            a.covariance_matrix(annualized=True),
+        "corr":           a.correlation_matrix(),
+        "vols":           a.stock_volatilities(),
+        "mrc":            a.marginal_risk_contributions(),
+        "port_vol":       a.portfolio_volatility(),
+        "returns":        a.returns.copy(),
+        "port_returns":   a.portfolio_returns.copy(),
+        "benchmark":      bench,
+        "sharpe":         a.sharpe_ratio(),
+        "sortino":        a.sortino_ratio(),
+        "max_drawdown":   mdd["max_drawdown"],
+        "calmar":         a.calmar_ratio(),
+        "var95":          a.var(0.95),
+        "cvar95":         a.cvar(0.95),
+        "ann_return":     a.annualised_return(),
+        "rolling_betas":  a.rolling_factor_betas(window=36),
+        # hedge suggestions computed separately (needs portfolio_value input)
+        "_analyzer":      a,   # stored only for hedge computation
     }
 
 
@@ -501,8 +516,9 @@ weights_norm = res_weights / res_weights.sum() if res_weights.sum() > 0 else res
 
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-t_dash, t_factors, t_industry, t_cov, t_trades = st.tabs(
-    ["Dashboard", "Factor Analysis", "Industry", "Covariance", "Trade Log"]
+t_dash, t_factors, t_industry, t_cov, t_analytics, t_hedges, t_trades = st.tabs(
+    ["Dashboard", "Factor Analysis", "Industry", "Covariance",
+     "Analytics", "Hedges", "Trade Log"]
 )
 
 
@@ -625,6 +641,254 @@ with t_cov:
                 st.dataframe(results["cov"].round(5), width="stretch")
 
 
+# ══ ANALYTICS ══════════════════════════════════════════════════════════════════
+with t_analytics:
+    if not has_results:
+        st.info("Run an analysis from the sidebar first.")
+    else:
+        # ── Performance metrics grid ──────────────────────────────────
+        st.markdown(f'<span class="accent-bar"></span>'
+                    f'<span class="section-header">Performance Metrics</span>',
+                    unsafe_allow_html=True)
+
+        ann_ret = results["ann_return"]
+        sharpe  = results["sharpe"]
+        sortino = results["sortino"]
+        mdd     = results["max_drawdown"]
+        calmar  = results["calmar"]
+        var95   = results["var95"]
+        cvar95  = results["cvar95"]
+
+        c1,c2,c3,c4 = st.columns(4)
+        c1.metric("Ann. Return",   f"{ann_ret*100:.1f}%")
+        c2.metric("Sharpe Ratio",  f"{sharpe:.2f}")
+        c3.metric("Sortino Ratio", f"{sortino:.2f}")
+        c4.metric("Max Drawdown",  f"{mdd*100:.1f}%")
+        c1,c2,c3,c4 = st.columns(4)
+        c1.metric("Calmar Ratio",  f"{calmar:.2f}" if calmar < 99 else "—")
+        c2.metric("VaR (95%)",     f"{var95*100:.1f}%")
+        c3.metric("CVaR (95%)",    f"{cvar95*100:.1f}%")
+        c4.metric("Portfolio Vol", f"{results['port_vol']*100:.1f}%")
+
+        # ── Benchmark comparison ──────────────────────────────────────
+        st.divider()
+        st.markdown(f'<span class="accent-bar"></span>'
+                    f'<span class="section-header">Benchmark Comparison (vs SPY)</span>',
+                    unsafe_allow_html=True)
+
+        port_ret  = results["port_returns"]
+        bench_ret = results["benchmark"].reindex(port_ret.index).dropna()
+        port_cum  = (1 + port_ret.reindex(bench_ret.index)).cumprod()
+        bench_cum = (1 + bench_ret).cumprod()
+
+        fig_bench = go.Figure()
+        fig_bench.add_trace(go.Scatter(
+            x=port_cum.index, y=port_cum.values,
+            mode="lines", name="Portfolio",
+            line=dict(color=ACCENT, width=2.5),
+        ))
+        fig_bench.add_trace(go.Scatter(
+            x=bench_cum.index, y=bench_cum.values,
+            mode="lines", name="SPY",
+            line=dict(color=TXT2, width=1.5, dash="dot"),
+        ))
+        fig_bench.add_hline(y=1, line_dash="dash", line_color=BORDER, line_width=1)
+        fig_bench.update_layout(
+            **_PLOTLY,
+            title=dict(text="Portfolio vs S&P 500", font=dict(size=15, color=TXT)),
+            yaxis_title="Growth of $1", height=340,
+            legend=dict(orientation="h", y=-0.2, font=dict(color=TXT2)),
+            xaxis=dict(gridcolor=BORDER), yaxis=dict(gridcolor=BORDER),
+        )
+        st.plotly_chart(fig_bench, width="stretch")
+
+        # Benchmark stats comparison table
+        def _ann(r):
+            return (1 + r.mean()) ** 12 - 1
+        def _vol(r):
+            return r.std() * np.sqrt(12)
+        def _sr(r, rf=0):
+            ex = r - rf
+            return ex.mean() / ex.std() * np.sqrt(12) if ex.std() else 0
+        def _mdd(r):
+            c = (1+r).cumprod()
+            return ((c - c.cummax()) / c.cummax()).min()
+
+        aligned_port  = port_ret.reindex(bench_ret.index).dropna()
+        comp_df = pd.DataFrame({
+            "Metric":    ["Ann. Return", "Ann. Volatility", "Sharpe", "Max Drawdown"],
+            "Portfolio": [f"{_ann(aligned_port)*100:.1f}%",
+                          f"{_vol(aligned_port)*100:.1f}%",
+                          f"{_sr(aligned_port):.2f}",
+                          f"{_mdd(aligned_port)*100:.1f}%"],
+            "SPY":       [f"{_ann(bench_ret)*100:.1f}%",
+                          f"{_vol(bench_ret)*100:.1f}%",
+                          f"{_sr(bench_ret):.2f}",
+                          f"{_mdd(bench_ret)*100:.1f}%"],
+        })
+        st.dataframe(comp_df, hide_index=True, width="stretch")
+
+        # Export benchmark comparison
+        st.download_button(
+            "⬇ Export comparison CSV",
+            comp_df.to_csv(index=False),
+            file_name="benchmark_comparison.csv",
+            mime="text/csv",
+        )
+
+        # ── Rolling factor betas ──────────────────────────────────────
+        rolling = results["rolling_betas"]
+        if not rolling.empty:
+            st.divider()
+            st.markdown(f'<span class="accent-bar"></span>'
+                        f'<span class="section-header">Rolling Factor Betas (36-month window)</span>',
+                        unsafe_allow_html=True)
+            palette = [ACCENT, PINK, POS, "#818cf8", "#fb923c", "#fbbf24"]
+            fig_roll = go.Figure()
+            for i, col in enumerate(rolling.columns):
+                fig_roll.add_trace(go.Scatter(
+                    x=rolling.index, y=rolling[col],
+                    mode="lines", name=col,
+                    line=dict(color=palette[i % len(palette)], width=1.8),
+                ))
+            fig_roll.add_hline(y=0, line_dash="dash", line_color=TXT2, line_width=1)
+            fig_roll.update_layout(
+                **_PLOTLY,
+                title=dict(text="How factor exposures change over time",
+                           font=dict(size=15, color=TXT)),
+                yaxis_title="Beta", height=370,
+                legend=dict(orientation="h", y=-0.2, font=dict(color=TXT2)),
+                xaxis=dict(gridcolor=BORDER), yaxis=dict(gridcolor=BORDER),
+            )
+            st.plotly_chart(fig_roll, width="stretch")
+            st.download_button(
+                "⬇ Export rolling betas CSV",
+                rolling.to_csv(),
+                file_name="rolling_betas.csv",
+                mime="text/csv",
+            )
+
+        # ── Returns distribution ──────────────────────────────────────
+        st.divider()
+        st.markdown(f'<span class="accent-bar"></span>'
+                    f'<span class="section-header">Returns Distribution</span>',
+                    unsafe_allow_html=True)
+        ret_vals = results["port_returns"].dropna() * 100
+        fig_dist = go.Figure()
+        fig_dist.add_trace(go.Histogram(
+            x=ret_vals, nbinsx=40,
+            marker_color=ACCENT, opacity=0.75,
+            name="Monthly Returns",
+        ))
+        fig_dist.add_vline(x=float(var95 * 100), line_dash="dash",
+                           line_color=NEG, line_width=2,
+                           annotation_text=f"VaR 95%: {var95*100:.1f}%",
+                           annotation_font_color=NEG)
+        fig_dist.update_layout(
+            **_PLOTLY,
+            title=dict(text="Monthly Return Distribution", font=dict(size=15, color=TXT)),
+            xaxis_title="Monthly Return (%)", yaxis_title="Frequency",
+            height=320,
+            xaxis=dict(gridcolor=BORDER), yaxis=dict(gridcolor=BORDER),
+        )
+        st.plotly_chart(fig_dist, width="stretch")
+
+
+# ══ HEDGES ═════════════════════════════════════════════════════════════════════
+with t_hedges:
+    if not has_results:
+        st.info("Run an analysis from the sidebar first.")
+    else:
+        st.markdown(f'<span class="accent-bar"></span>'
+                    f'<span class="section-header">Factor-Neutral Hedge Suggestions</span>',
+                    unsafe_allow_html=True)
+        st.markdown(f"""
+        <div style='color:{TXT2};font-size:13px;margin-bottom:16px'>
+        Shows positions needed to bring each <b>statistically significant</b> factor beta
+        to zero. Only factors with |β| > 0.15 and p &lt; 0.10 are shown.
+        </div>
+        """, unsafe_allow_html=True)
+
+        port_val = st.number_input(
+            "Portfolio value ($) — used to size hedge positions",
+            min_value=1000, value=100000, step=5000, format="%d",
+        )
+
+        if st.button("Compute Hedges", type="primary"):
+            with st.spinner("Running factor regressions on hedge ETFs…"):
+                try:
+                    analyzer = results["_analyzer"]
+                    hedges   = analyzer.hedge_suggestions(
+                        results["ff"],
+                        industry_results=results["ind"],
+                        portfolio_value=float(port_val),
+                    )
+                    st.session_state.hedges = hedges
+                except Exception as e:
+                    st.error(f"Hedge computation failed: {e}")
+
+        if "hedges" in st.session_state:
+            h = st.session_state.hedges
+
+            # ── Factor hedges ─────────────────────────────────────────
+            st.markdown(f'<div class="section-label" style="margin-top:16px">Factor Hedges</div>',
+                        unsafe_allow_html=True)
+            if h["factor_hedges"]:
+                fh_df = pd.DataFrame(h["factor_hedges"])
+                fh_display = fh_df.rename(columns={
+                    "factor": "Factor", "port_beta": "Portfolio β",
+                    "hedge_etf": "Hedge ETF", "direction": "Direction",
+                    "notional": "Notional ($)", "current_price": "ETF Price",
+                    "approx_shares": "Approx. Shares",
+                    "etf_factor_beta": "ETF β to Factor",
+                })
+                # Colour direction column
+                def _dir_color(val):
+                    c = POS if val == "BUY" else NEG
+                    return f"color: {c}; font-weight: 700"
+                st.dataframe(
+                    fh_display.style.applymap(_dir_color, subset=["Direction"]),
+                    hide_index=True, width="stretch",
+                )
+                st.caption(
+                    "Notional = position size needed to neutralise that factor beta. "
+                    "BUY = go long the ETF. SHORT = sell short."
+                )
+                st.download_button(
+                    "⬇ Export factor hedges CSV",
+                    fh_display.to_csv(index=False),
+                    file_name="factor_hedges.csv", mime="text/csv",
+                )
+            else:
+                st.success("No significant factor exposures to hedge at current thresholds.")
+
+            # ── Industry hedges ───────────────────────────────────────
+            st.divider()
+            st.markdown(f'<div class="section-label">Industry Hedges</div>',
+                        unsafe_allow_html=True)
+            if h["industry_hedges"]:
+                ih_df = pd.DataFrame(h["industry_hedges"])
+                ih_display = ih_df.rename(columns={
+                    "sector": "Sector", "port_beta": "Portfolio β",
+                    "hedge_etf": "Hedge ETF", "direction": "Direction",
+                    "notional": "Notional ($)", "current_price": "ETF Price",
+                    "approx_shares": "Approx. Shares",
+                })
+                st.dataframe(
+                    ih_display.style.applymap(_dir_color, subset=["Direction"]),
+                    hide_index=True, width="stretch",
+                )
+                st.download_button(
+                    "⬇ Export industry hedges CSV",
+                    ih_display.to_csv(index=False),
+                    file_name="industry_hedges.csv", mime="text/csv",
+                )
+            elif results["ind"] is None:
+                st.info("Enable industry analysis in the sidebar and re-run to get industry hedges.")
+            else:
+                st.success("No significant industry exposures to hedge.")
+
+
 # ══ TRADE LOG ══════════════════════════════════════════════════════════════════
 with t_trades:
     st.markdown(f'<span class="accent-bar"></span>'
@@ -651,31 +915,83 @@ with t_trades:
             else:
                 st.error("Enter a ticker symbol.")
 
-    # ── Current positions ─────────────────────────────────────────────────
-    positions = db.get_positions_summary()
-    if not positions.empty:
-        st.markdown(f'<div class="section-label" style="margin-top:24px">Open Positions</div>',
+    # ── Unrealized P&L ────────────────────────────────────────────────────
+    pnl_df = db.get_unrealized_pnl()
+    if not pnl_df.empty:
+        st.markdown(f'<div class="section-label" style="margin-top:24px">Unrealized P&L (Live Prices)</div>',
                     unsafe_allow_html=True)
-        display = positions.copy()
-        display["Avg Cost"]   = display["Avg Cost"].map("${:,.2f}".format)
-        display["Cost Basis"] = display["Cost Basis"].map("${:,.0f}".format)
-        st.dataframe(display, hide_index=True, width="stretch")
 
-    # ── Trade history ─────────────────────────────────────────────────────
+        total_val  = pnl_df["Market Value"].sum()
+        total_cost = (pnl_df["Net Qty"] * pnl_df["Avg Cost"]).sum()
+        total_pnl  = pnl_df["Unrealized P&L"].sum()
+        total_pct  = total_pnl / total_cost * 100 if total_cost else 0
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Market Value",    f"${total_val:,.0f}")
+        m2.metric("Cost Basis",      f"${total_cost:,.0f}")
+        pnl_color = "normal" if total_pnl >= 0 else "inverse"
+        m3.metric("Unrealized P&L",  f"${total_pnl:,.0f}",
+                  delta=f"{total_pct:.1f}%", delta_color=pnl_color)
+
+        pnl_display = pnl_df.copy()
+        pnl_display["Avg Cost"]       = pnl_display["Avg Cost"].map("${:,.2f}".format)
+        pnl_display["Current Price"]  = pnl_display["Current Price"].map("${:,.2f}".format)
+        pnl_display["Market Value"]   = pnl_display["Market Value"].map("${:,.0f}".format)
+        pnl_display["Unrealized P&L"] = pnl_display["Unrealized P&L"].map("${:,.0f}".format)
+        pnl_display["P&L %"]          = pnl_display["P&L %"].map("{:+.1f}%".format)
+        st.dataframe(pnl_display, hide_index=True, width="stretch")
+        st.download_button("⬇ Export P&L CSV", pnl_df.to_csv(index=False),
+                           file_name="unrealized_pnl.csv", mime="text/csv")
+
+    # ── Portfolio value history ───────────────────────────────────────────
     all_trades = db.get_trades()
     if not all_trades.empty:
+        with st.spinner("Building portfolio value history…"):
+            port_hist = db.get_portfolio_value_history()
+
+        if not port_hist.empty:
+            st.markdown(f'<div class="section-label" style="margin-top:24px">Portfolio Value Over Time</div>',
+                        unsafe_allow_html=True)
+            fig_hist = go.Figure(go.Scatter(
+                x=port_hist.index, y=port_hist.values,
+                mode="lines", fill="tozeroy",
+                line=dict(color=ACCENT, width=2),
+                fillcolor=f"rgba(217,70,239,0.15)",
+            ))
+            fig_hist.update_layout(
+                **_PLOTLY,
+                title=dict(text="Total Portfolio Value", font=dict(size=15, color=TXT)),
+                yaxis_title="Value ($)", height=300,
+                yaxis=dict(tickprefix="$", gridcolor=BORDER),
+                xaxis=dict(gridcolor=BORDER),
+            )
+            st.plotly_chart(fig_hist, width="stretch")
+
+        # ── Open positions table ──────────────────────────────────────
+        positions = db.get_positions_summary()
+        if not positions.empty:
+            st.markdown(f'<div class="section-label" style="margin-top:24px">Open Positions</div>',
+                        unsafe_allow_html=True)
+            display = positions.copy()
+            display["Avg Cost"]   = display["Avg Cost"].map("${:,.2f}".format)
+            display["Cost Basis"] = display["Cost Basis"].map("${:,.0f}".format)
+            st.dataframe(display, hide_index=True, width="stretch")
+
+        # ── Full trade history ────────────────────────────────────────
         st.markdown(f'<div class="section-label" style="margin-top:24px">All Trades</div>',
                     unsafe_allow_html=True)
         disp = all_trades[["id","ticker","trade_date","action","quantity","price","notes"]].copy()
         disp.columns = ["ID","Ticker","Date","Action","Qty","Price","Notes"]
         disp["Price"] = disp["Price"].map("${:,.2f}".format)
-
         st.dataframe(disp, hide_index=True, width="stretch")
 
-        del_col, _ = st.columns([1, 3])
-        del_id = del_col.number_input("Delete trade ID", min_value=1, step=1,
+        col_dl, col_del, _ = st.columns([1.2, 1, 3])
+        col_dl.download_button("⬇ Export trades CSV",
+                               all_trades.to_csv(index=False),
+                               file_name="trade_log.csv", mime="text/csv")
+        del_id = col_del.number_input("Delete ID", min_value=1, step=1,
                                       label_visibility="visible")
-        if del_col.button("🗑 Delete", use_container_width=True):
+        if col_del.button("🗑 Delete", use_container_width=True):
             db.delete_trade(int(del_id))
             st.success(f"Deleted trade #{del_id}")
             st.cache_data.clear()

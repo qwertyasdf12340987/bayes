@@ -180,6 +180,111 @@ class TradeDB:
 
         return pd.DataFrame(rows).sort_values("Ticker").reset_index(drop=True)
 
+    def get_unrealized_pnl(self) -> pd.DataFrame:
+        """
+        Fetch live prices via yfinance and compute unrealized P&L for each
+        open position.
+
+        Returns a DataFrame with columns:
+          Ticker, Net Qty, Avg Cost, Current Price, Market Value,
+          Unrealized P&L, Unrealized P&L %
+        """
+        import yfinance as yf
+
+        positions = self.get_positions_summary()
+        if positions.empty:
+            return pd.DataFrame()
+
+        tickers = positions["Ticker"].tolist()
+        try:
+            raw = yf.download(tickers, period="1d", auto_adjust=True, progress=False)
+            if len(tickers) == 1:
+                prices = {tickers[0]: float(raw["Close"].iloc[-1])}
+            else:
+                prices = {t: float(raw["Close"][t].iloc[-1]) for t in tickers
+                          if t in raw["Close"].columns}
+        except Exception:
+            prices = {}
+
+        rows = []
+        for _, row in positions.iterrows():
+            t       = row["Ticker"]
+            net_qty = float(row["Net Qty"])
+            avg_cost = float(row["Avg Cost"])
+            cur_px  = prices.get(t)
+            if cur_px is None:
+                continue
+            mkt_val  = net_qty * cur_px
+            cost_bas = net_qty * avg_cost
+            pnl      = mkt_val - cost_bas
+            pnl_pct  = pnl / cost_bas * 100 if cost_bas else 0
+            rows.append({
+                "Ticker":          t,
+                "Net Qty":         net_qty,
+                "Avg Cost":        avg_cost,
+                "Current Price":   cur_px,
+                "Market Value":    mkt_val,
+                "Unrealized P&L":  pnl,
+                "P&L %":           pnl_pct,
+            })
+
+        return pd.DataFrame(rows)
+
+    def get_portfolio_value_history(self) -> pd.Series:
+        """
+        Reconstruct daily portfolio value from the trade log.
+        Downloads price history for all ever-held tickers.
+        Returns a Series of total portfolio value indexed by date.
+        """
+        import yfinance as yf
+
+        trades = self.get_trades()
+        if trades.empty:
+            return pd.Series(dtype=float, name="Portfolio Value")
+
+        trades["trade_date"] = pd.to_datetime(trades["trade_date"])
+        all_tickers = trades["ticker"].unique().tolist()
+        start = trades["trade_date"].min().strftime("%Y-%m-%d")
+
+        # Download daily prices for all tickers
+        raw = yf.download(all_tickers, start=start, auto_adjust=True, progress=False)
+        if len(all_tickers) == 1:
+            prices = raw[["Close"]].rename(columns={"Close": all_tickers[0]})
+        else:
+            prices = raw["Close"]
+        prices = prices.ffill()
+
+        # Walk forward day by day: maintain running holdings dict
+        trades_sorted = trades.sort_values("trade_date")
+        holdings: dict = {}
+        trade_idx = 0
+        n_trades  = len(trades_sorted)
+        port_values = {}
+
+        for day in prices.index:
+            # Apply all trades on or before this day
+            while trade_idx < n_trades:
+                row = trades_sorted.iloc[trade_idx]
+                if pd.Timestamp(row["trade_date"]).tz_localize(None) <= day.tz_localize(None) if day.tzinfo else pd.Timestamp(row["trade_date"]) <= day:
+                    t  = row["ticker"]
+                    dq = row["quantity"] if row["action"] == "BUY" else -row["quantity"]
+                    holdings[t] = holdings.get(t, 0) + dq
+                    trade_idx += 1
+                else:
+                    break
+
+            # Compute portfolio value
+            val = 0.0
+            for t, qty in holdings.items():
+                if qty > 0 and t in prices.columns:
+                    px = prices[t].get(day, float("nan"))
+                    if not pd.isna(px):
+                        val += qty * px
+            if val > 0:
+                port_values[day] = val
+
+        return pd.Series(port_values, name="Portfolio Value")
+
     @property
     def backend(self) -> str:
         return self._backend

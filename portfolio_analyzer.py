@@ -386,6 +386,300 @@ class PortfolioAnalyzer:
         return pd.Series(mrc, index=self.tickers, name="Risk Contribution")
 
     # ------------------------------------------------------------------
+    # Performance analytics
+    # ------------------------------------------------------------------
+
+    def _periods_per_year(self) -> int:
+        return 12 if self.frequency == "monthly" else 252
+
+    def _rf_series(self) -> pd.Series:
+        """Risk-free rate per period from FF data (or zero if unavailable)."""
+        try:
+            if self._ff_factors is None:
+                self.fetch_ff_factors(include_momentum=False)
+            ff = self._ff_factors.copy()
+            rf = ff["RF"].copy()
+            port = self.portfolio_returns.copy()
+            port.index = port.index.to_period("M").to_timestamp("M")
+            rf.index   = rf.index.to_period("M").to_timestamp("M")
+            return rf.reindex(port.index).fillna(0)
+        except Exception:
+            return pd.Series(0.0, index=self.portfolio_returns.index)
+
+    def sharpe_ratio(self) -> float:
+        """Annualised Sharpe ratio using FF risk-free rate."""
+        ppy = self._periods_per_year()
+        ret = self.portfolio_returns
+        rf  = self._rf_series()
+        excess = ret.values - rf.values
+        if excess.std() == 0:
+            return 0.0
+        return float((excess.mean() / excess.std()) * np.sqrt(ppy))
+
+    def sortino_ratio(self) -> float:
+        """Annualised Sortino ratio (penalises only downside deviation)."""
+        ppy = self._periods_per_year()
+        ret = self.portfolio_returns
+        rf  = self._rf_series()
+        excess = ret.values - rf.values
+        downside = excess[excess < 0]
+        if len(downside) == 0 or downside.std() == 0:
+            return float("inf")
+        downside_std = np.sqrt((downside ** 2).mean())
+        return float((excess.mean() / downside_std) * np.sqrt(ppy))
+
+    def max_drawdown(self) -> dict:
+        """Maximum drawdown and the dates of peak and trough."""
+        cum = (1 + self.portfolio_returns).cumprod()
+        rolling_max = cum.cummax()
+        drawdown = (cum - rolling_max) / rolling_max
+        trough_idx = drawdown.idxmin()
+        peak_idx   = cum[:trough_idx].idxmax()
+        return {
+            "max_drawdown": float(drawdown.min()),
+            "peak_date":    peak_idx,
+            "trough_date":  trough_idx,
+        }
+
+    def calmar_ratio(self) -> float:
+        """Annualised return divided by absolute max drawdown."""
+        ppy  = self._periods_per_year()
+        ann_ret = (1 + self.portfolio_returns.mean()) ** ppy - 1
+        mdd  = abs(self.max_drawdown()["max_drawdown"])
+        return float(ann_ret / mdd) if mdd > 0 else float("inf")
+
+    def var(self, confidence: float = 0.95) -> float:
+        """Historical Value-at-Risk (single-period, annualised scaling)."""
+        return float(np.percentile(self.portfolio_returns, (1 - confidence) * 100))
+
+    def cvar(self, confidence: float = 0.95) -> float:
+        """Conditional VaR / Expected Shortfall at given confidence."""
+        v   = self.var(confidence)
+        ret = self.portfolio_returns
+        return float(ret[ret <= v].mean())
+
+    def annualised_return(self) -> float:
+        ppy = self._periods_per_year()
+        return float((1 + self.portfolio_returns.mean()) ** ppy - 1)
+
+    def benchmark_returns(self, benchmark: str = "SPY") -> pd.Series:
+        """Fetch and return the benchmark's periodic returns."""
+        raw = yf.download(benchmark, start=self.start_date, end=self.end_date,
+                          auto_adjust=True, progress=False)
+        daily = raw["Close"].pct_change().dropna()
+        if self.frequency == "monthly":
+            b = daily.resample("ME").apply(lambda x: (1 + x).prod() - 1)
+        else:
+            b = daily
+        b.name = benchmark
+        return b
+
+    def rolling_factor_betas(
+        self,
+        window: int = 36,
+        include_momentum: bool = True,
+    ) -> pd.DataFrame:
+        """
+        Rolling OLS factor betas over a sliding window.
+        Returns a DataFrame indexed by date with one column per factor.
+        """
+        if self._ff_factors is None:
+            self.fetch_ff_factors(include_momentum=include_momentum)
+
+        ff      = self._ff_factors.copy()
+        factors = [c for c in ["Mkt-RF", "SMB", "HML", "RMW", "CMA", "MOM"]
+                   if c in ff.columns]
+
+        def _to_eom(idx):
+            return idx.to_period("M").to_timestamp("M")
+
+        port = self.portfolio_returns.copy()
+        port.index = _to_eom(port.index)
+        excess = (port - ff["RF"]).dropna()
+
+        records = []
+        for i in range(window, len(excess) + 1):
+            y_w = excess.iloc[i - window: i]
+            X_w = ff[factors].reindex(y_w.index).dropna()
+            y_w = y_w.reindex(X_w.index)
+            if len(y_w) < window // 2:
+                continue
+            try:
+                res = sm.OLS(y_w, sm.add_constant(X_w)).fit()
+                row = {"date": y_w.index[-1]}
+                row.update(res.params.drop("const").to_dict())
+                records.append(row)
+            except Exception:
+                continue
+
+        if not records:
+            return pd.DataFrame()
+        df = pd.DataFrame(records).set_index("date")
+        return df
+
+    # ------------------------------------------------------------------
+    # Hedge suggestions
+    # ------------------------------------------------------------------
+
+    # Best single-factor ETFs for hedging each FF factor
+    HEDGE_ETFS = {
+        "Mkt-RF": "SPY",   # market beta
+        "SMB":    "IWM",   # small-cap tilt
+        "HML":    "IVE",   # value tilt (iShares S&P 500 Value)
+        "RMW":    "QUAL",  # profitability / quality
+        "CMA":    "USMV",  # conservative investment / min-vol
+        "MOM":    "MTUM",  # momentum
+    }
+
+    HEDGE_SECTOR_ETFS = {
+        "Technology":       "XLK",
+        "Healthcare":       "XLV",
+        "Financials":       "XLF",
+        "Consumer Disc.":   "XLY",
+        "Consumer Staples": "XLP",
+        "Energy":           "XLE",
+        "Utilities":        "XLU",
+        "Materials":        "XLB",
+        "Industrials":      "XLI",
+        "Real Estate":      "XLRE",
+        "Communication":    "XLC",
+    }
+
+    def hedge_suggestions(
+        self,
+        ff_results: dict,
+        industry_results: Optional[dict] = None,
+        portfolio_value: float = 100_000,
+        significance_threshold: float = 0.10,
+        beta_threshold: float = 0.15,
+    ) -> dict:
+        """
+        Compute positions needed to bring each significant factor beta to zero.
+
+        For each factor where |beta| > beta_threshold and p < significance_threshold:
+          1. Get the hedge ETF's own factor betas via FF regression
+          2. Compute notional = -(port_beta / etf_beta_to_factor) * portfolio_value
+          3. Positive notional = buy, negative = short
+
+        Returns a dict with 'factor_hedges' and 'industry_hedges' lists.
+        """
+        port_betas = ff_results["portfolio"]["betas"]
+        port_pvals = ff_results["portfolio"]["pvals"]
+
+        # ── factor hedges ─────────────────────────────────────────────
+        factor_hedges = []
+        hedge_tickers = list(set(self.HEDGE_ETFS.values()))
+
+        # Download hedge ETF price data and compute their FF betas
+        raw = yf.download(hedge_tickers, start=self.start_date, end=self.end_date,
+                          auto_adjust=True, progress=False)
+        if len(hedge_tickers) == 1:
+            etf_prices = raw[["Close"]].rename(columns={"Close": hedge_tickers[0]})
+        else:
+            etf_prices = raw["Close"]
+
+        etf_daily   = etf_prices.pct_change().dropna(how="all")
+        etf_monthly = etf_daily.resample("ME").apply(lambda x: (1 + x).prod() - 1)
+
+        ff = self._ff_factors.copy()
+        factors = [c for c in ["Mkt-RF", "SMB", "HML", "RMW", "CMA", "MOM"]
+                   if c in ff.columns]
+
+        def _to_eom(idx):
+            return idx.to_period("M").to_timestamp("M")
+
+        etf_monthly.index = _to_eom(etf_monthly.index)
+        ff.index          = _to_eom(ff.index)
+
+        # Compute factor betas for each hedge ETF
+        etf_betas: dict = {}
+        for etf in hedge_tickers:
+            if etf not in etf_monthly.columns:
+                continue
+            excess = etf_monthly[etf] - ff["RF"]
+            try:
+                res = self._run_ols(excess, ff[factors])
+                etf_betas[etf] = res["betas"]
+            except Exception:
+                continue
+
+        # For each factor, compute hedge
+        for factor, port_beta in port_betas.items():
+            p_val = port_pvals.get(factor, 1.0)
+            if abs(port_beta) < beta_threshold or p_val > significance_threshold:
+                continue
+            if factor not in self.HEDGE_ETFS:
+                continue
+
+            hedge_etf = self.HEDGE_ETFS[factor]
+            if hedge_etf not in etf_betas:
+                continue
+
+            etf_factor_beta = etf_betas[hedge_etf].get(factor, 0)
+            if abs(etf_factor_beta) < 0.1:
+                continue  # ETF has negligible exposure to this factor
+
+            notional = -(port_beta / etf_factor_beta) * portfolio_value
+            direction = "BUY" if notional > 0 else "SHORT"
+
+            # Fetch current price for share count estimate
+            try:
+                current_px = float(
+                    yf.download(hedge_etf, period="1d", progress=False)["Close"].iloc[-1]
+                )
+                shares = abs(notional) / current_px
+            except Exception:
+                current_px, shares = None, None
+
+            factor_hedges.append({
+                "factor":       factor,
+                "port_beta":    round(port_beta, 3),
+                "hedge_etf":    hedge_etf,
+                "direction":    direction,
+                "notional":     round(abs(notional), 0),
+                "current_price": round(current_px, 2) if current_px else None,
+                "approx_shares": round(shares, 1) if shares else None,
+                "etf_factor_beta": round(etf_factor_beta, 3),
+            })
+
+        # ── industry hedges ───────────────────────────────────────────
+        industry_hedges = []
+        if industry_results:
+            ind_betas = industry_results.get("betas", {})
+            ind_pvals = industry_results.get("pvals", {})
+            for sector, beta in ind_betas.items():
+                p_val = ind_pvals.get(sector, 1.0)
+                if abs(beta) < beta_threshold or p_val > significance_threshold:
+                    continue
+                etf = self.HEDGE_SECTOR_ETFS.get(sector)
+                if not etf:
+                    continue
+                notional  = -beta * portfolio_value
+                direction = "BUY" if notional > 0 else "SHORT"
+                try:
+                    current_px = float(
+                        yf.download(etf, period="1d", progress=False)["Close"].iloc[-1]
+                    )
+                    shares = abs(notional) / current_px
+                except Exception:
+                    current_px, shares = None, None
+
+                industry_hedges.append({
+                    "sector":        sector,
+                    "port_beta":     round(beta, 3),
+                    "hedge_etf":     etf,
+                    "direction":     direction,
+                    "notional":      round(abs(notional), 0),
+                    "current_price": round(current_px, 2) if current_px else None,
+                    "approx_shares": round(shares, 1) if shares else None,
+                })
+
+        return {
+            "factor_hedges":   factor_hedges,
+            "industry_hedges": industry_hedges,
+        }
+
+    # ------------------------------------------------------------------
     # Display helpers
     # ------------------------------------------------------------------
 
