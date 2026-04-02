@@ -38,6 +38,10 @@ export default function Analytics({ result }: { result: AnalysisResult }) {
     { label: "VaR 95%",       value: `${(result.var95 * 100).toFixed(2)}%`,        positive: false },
     { label: "CVaR 95%",      value: `${(result.cvar95 * 100).toFixed(2)}%`,       positive: false },
     { label: "Port. Vol",     value: `${(result.port_vol * 100).toFixed(1)}%`,     positive: undefined },
+    { label: `Oil Beta (${result.oil_exposure.oil_proxy})`, value: result.oil_exposure.beta.toFixed(2), positive: result.oil_exposure.beta <= 0 },
+    { label: "Oil Corr",      value: result.oil_exposure.correlation.toFixed(2),    positive: result.oil_exposure.correlation <= 0 },
+    { label: `Rates Beta (${result.rates_exposure.rates_proxy})`, value: result.rates_exposure.beta.toFixed(2), positive: result.rates_exposure.beta <= 0 },
+    { label: "Rates Corr",    value: result.rates_exposure.correlation.toFixed(2),  positive: result.rates_exposure.correlation <= 0 },
   ];
 
   return (
