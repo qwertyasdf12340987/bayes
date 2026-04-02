@@ -5,3 +5,5 @@ trades.db
 schwab_token.json
 .env
 .claude/
+node_modules/
+dist/

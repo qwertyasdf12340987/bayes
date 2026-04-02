@@ -7,10 +7,16 @@ import Covariance from "./components/Covariance";
 import Analytics from "./components/Analytics";
 import Hedges from "./components/Hedges";
 import Optimizer from "./components/Optimizer";
+import Simulate from "./components/Simulate";
+import Backtest from "./components/Backtest";
+import Signals from "./components/Signals";
 import TradeLog from "./components/TradeLog";
 import { AnalysisResult } from "./api";
 
-const TABS = ["Dashboard", "Factor Analysis", "Industry", "Covariance", "Analytics", "Hedges", "Optimizer", "Trade Log"];
+const TABS = [
+  "Dashboard", "Factor Analysis", "Industry", "Covariance", "Analytics",
+  "Hedges", "Optimizer", "Simulate", "Backtest", "Signals", "Trade Log",
+];
 
 export type PortfolioParams = {
   tickers: string[];
@@ -26,17 +32,16 @@ export default function App() {
   const [params, setParams]     = useState<PortfolioParams | null>(null);
   const [loading, setLoading]   = useState(false);
   const [error, setError]       = useState<string | null>(null);
-
   const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  const TRADE_TAB = TABS.length - 1; // Trade Log is always last
 
   return (
     <div className="flex h-screen bg-bg overflow-hidden">
-      {/* Mobile sidebar overlay */}
       {sidebarOpen && (
         <div className="fixed inset-0 bg-black/60 z-40 lg:hidden" onClick={() => setSidebarOpen(false)} />
       )}
 
-      {/* Sidebar — hidden on mobile unless toggled */}
       <div className={`fixed lg:static inset-y-0 left-0 z-50 transform transition-transform lg:transform-none ${
         sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
       }`}>
@@ -51,11 +56,9 @@ export default function App() {
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-        {/* Tab bar */}
         <div className="flex items-center gap-2 px-3 sm:px-6 pt-4 pb-0 bg-bg">
-          {/* Mobile hamburger */}
           <button onClick={() => setSidebarOpen(true)}
-            className="lg:hidden p-2 rounded-lg text-txt2 hover:text-txt hover:bg-card2">
+            className="lg:hidden shrink-0 p-2 rounded-lg text-txt2 hover:text-txt hover:bg-card2">
             <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
               <path d="M2 4.5h16M2 10h16M2 15.5h16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none"/>
             </svg>
@@ -77,7 +80,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Content */}
         <div className="flex-1 overflow-y-auto p-3 sm:p-6">
           {error && (
             <div className="mb-4 p-4 bg-neg/10 border border-neg/30 rounded-xl text-neg text-sm">
@@ -90,17 +92,18 @@ export default function App() {
               <p className="text-txt2">Downloading data & running regressions... (15-30 s)</p>
             </div>
           )}
-          {!loading && !result && tab !== 7 && (
-            <Landing />
-          )}
-          {!loading && result && tab === 0 && <Dashboard result={result} />}
-          {!loading && result && tab === 1 && <FactorAnalysis result={result} />}
-          {!loading && result && tab === 2 && <Industry result={result} />}
-          {!loading && result && tab === 3 && <Covariance result={result} />}
-          {!loading && result && tab === 4 && <Analytics result={result} />}
-          {!loading && result && tab === 5 && <Hedges result={result} params={params!} />}
-          {!loading && result && tab === 6 && <Optimizer result={result} params={params!} />}
-          {!loading && tab === 7 && <TradeLog onLoad={(t, w) => {
+          {!loading && !result && tab !== TRADE_TAB && <Landing />}
+          {!loading && result && tab === 0  && <Dashboard result={result} />}
+          {!loading && result && tab === 1  && <FactorAnalysis result={result} />}
+          {!loading && result && tab === 2  && <Industry result={result} />}
+          {!loading && result && tab === 3  && <Covariance result={result} />}
+          {!loading && result && tab === 4  && <Analytics result={result} />}
+          {!loading && result && tab === 5  && <Hedges result={result} params={params!} />}
+          {!loading && result && tab === 6  && <Optimizer result={result} params={params!} />}
+          {!loading && result && tab === 7  && <Simulate params={params!} />}
+          {!loading && result && tab === 8  && <Backtest params={params!} />}
+          {!loading && result && tab === 9  && <Signals params={params!} />}
+          {!loading && tab === TRADE_TAB && <TradeLog onLoad={(t, w) => {
             setParams(p => p ? { ...p, tickers: t, weights: w } : null);
           }} />}
         </div>
@@ -127,8 +130,11 @@ function Landing() {
           ["Industry", "Sector ETF regression to find your sector tilts"],
           ["Covariance", "Correlation matrix and risk contribution by stock"],
           ["Analytics", "Sharpe, Sortino, VaR, drawdown vs S&P 500"],
-          ["Hedges", "Exact ETF positions to neutralise factor exposure"],
-          ["Optimizer", "Mean-variance optimisation to maximise Sharpe ratio"],
+          ["Hedges", "ETF positions to neutralise factor exposure"],
+          ["Optimizer", "Mean-variance optimisation to maximise Sharpe"],
+          ["Simulate", "Monte Carlo simulation of portfolio outcomes"],
+          ["Backtest", "Test rebalancing strategies against buy & hold"],
+          ["Signals", "Fundamentals, analyst targets, options flow"],
           ["Trade Log", "Persistent trade history with live P&L"],
         ].map(([title, desc]) => (
           <div key={title as string} className="bg-card border border-border rounded-xl p-4 hover:border-accent/40 transition-colors">

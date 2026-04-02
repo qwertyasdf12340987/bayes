@@ -80,10 +80,70 @@ export type OptimizeResult = {
   }>;
 };
 
+export type SimulateResult = {
+  n_simulations: number;
+  horizon_months: number;
+  percentile_paths: Record<number, number[]>;
+  months: number[];
+  terminal_values: number[];
+  prob_loss: number;
+  median_return: number;
+  percentile_5_return: number;
+  percentile_95_return: number;
+  expected_annual_return: number;
+  expected_annual_vol: number;
+};
+
+export type BacktestResult = {
+  dates: string[];
+  rebalanced: number[];
+  buy_and_hold: number[];
+  rebalance_freq: string;
+  metrics: {
+    ann_return: number;
+    ann_vol: number;
+    sharpe: number;
+    max_drawdown: number;
+    total_return: number;
+  };
+};
+
+export type SignalData = {
+  ticker: string;
+  name: string;
+  sector: string;
+  market_cap: number | null;
+  pe_ratio: number | null;
+  forward_pe: number | null;
+  dividend_yield: number | null;
+  beta: number | null;
+  fifty_two_week_high: number | null;
+  fifty_two_week_low: number | null;
+  avg_volume: number | null;
+  earnings_date: string | null;
+  recommendation: string | null;
+  target_price: number | null;
+  analyst_count: number | null;
+  put_call_ratio: number | null;
+  short_percent: number | null;
+};
+
+export type MacroData = {
+  vix: number | null;
+  us10y: number | null;
+  us3m: number | null;
+  spy_price: number | null;
+  spy_pe: number | null;
+};
+
 export const api = {
   analyze:        (b: object) => post<AnalysisResult>("/analyze", b),
   hedges:         (b: object) => post<{ factor_hedges: HedgeRow[]; industry_hedges: HedgeRow[] }>("/hedges", b),
   optimize:       (b: object) => post<OptimizeResult>("/optimize", b),
+  simulate:       (b: object) => post<SimulateResult>("/simulate", b),
+  backtest:       (b: object) => post<BacktestResult>("/backtest", b),
+  getSignals:     (ticker: string) => get<SignalData>(`/signals/${ticker}`),
+  getMacro:       ()          => get<MacroData>("/macro"),
   getTrades:      ()          => get<Trade[]>("/trades"),
   addTrade:       (b: object) => post("/trades", b),
   deleteTrade:    (id: number) => del(`/trades/${id}`),

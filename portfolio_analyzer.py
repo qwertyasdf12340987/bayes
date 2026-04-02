@@ -457,6 +457,137 @@ class PortfolioAnalyzer:
         }
 
     # ------------------------------------------------------------------
+    # Monte Carlo simulation
+    # ------------------------------------------------------------------
+
+    def monte_carlo(
+        self,
+        n_simulations: int = 5000,
+        horizon_months: int = 12,
+        expected_returns: Optional[Dict[str, float]] = None,
+    ) -> dict:
+        """Simulate portfolio paths using geometric Brownian motion."""
+        cov = self.covariance_matrix(annualized=True).values
+        if expected_returns:
+            mu = np.array([expected_returns.get(t, 0.0) for t in self.tickers])
+        else:
+            ppy = self._periods_per_year()
+            mu = np.array([(1 + self.returns[t].mean()) ** ppy - 1 for t in self.tickers])
+
+        # Monthly parameters
+        mu_m = mu / 12
+        cov_m = cov / 12
+        w = self.weights
+
+        port_mu = float(w @ mu_m)
+        port_vol = float(np.sqrt(w @ cov_m @ w))
+
+        rng = np.random.default_rng(42)
+        shocks = rng.normal(port_mu, port_vol, size=(n_simulations, horizon_months))
+        paths = np.cumprod(1 + shocks, axis=1)
+        # Prepend 1.0 start
+        paths = np.hstack([np.ones((n_simulations, 1)), paths])
+
+        terminal = paths[:, -1]
+        percentiles = [5, 25, 50, 75, 95]
+        pct_paths = {p: np.percentile(paths, p, axis=0).tolist() for p in percentiles}
+
+        return {
+            "n_simulations": n_simulations,
+            "horizon_months": horizon_months,
+            "percentile_paths": pct_paths,
+            "months": list(range(horizon_months + 1)),
+            "terminal_values": terminal.tolist(),
+            "prob_loss": float((terminal < 1.0).mean()),
+            "median_return": float(np.median(terminal) - 1),
+            "percentile_5_return": float(np.percentile(terminal, 5) - 1),
+            "percentile_95_return": float(np.percentile(terminal, 95) - 1),
+            "expected_annual_return": float(w @ mu),
+            "expected_annual_vol": float(np.sqrt(w @ cov @ w)),
+        }
+
+    # ------------------------------------------------------------------
+    # Backtesting
+    # ------------------------------------------------------------------
+
+    def backtest(
+        self,
+        rebalance_freq: str = "quarterly",
+        target_weights: Optional[List[float]] = None,
+    ) -> dict:
+        """Walk-forward backtest with periodic rebalancing."""
+        tw = np.array(target_weights) if target_weights else self.weights
+        tw = tw / tw.sum()
+
+        rets = self.returns.copy()
+        dates = rets.index.tolist()
+        n = len(dates)
+
+        # Determine rebalance months
+        if rebalance_freq == "monthly":
+            rebal_every = 1
+        elif rebalance_freq == "quarterly":
+            rebal_every = 3
+        elif rebalance_freq == "annually":
+            rebal_every = 12
+        else:
+            rebal_every = 3
+
+        # Walk forward
+        holdings = tw.copy().astype(float)
+        rebal_values = [1.0]
+        bh_values = [1.0]
+        months_since = 0
+
+        for i in range(n):
+            r = rets.iloc[i].values
+            # Rebalanced portfolio
+            port_ret = float(holdings @ r)
+            rebal_values.append(rebal_values[-1] * (1 + port_ret))
+            # Update holdings drift
+            holdings = holdings * (1 + r)
+            holdings = holdings / holdings.sum()
+            months_since += 1
+            if months_since >= rebal_every:
+                holdings = tw.copy()
+                months_since = 0
+            # Buy-and-hold
+            bh_ret = float(tw @ r) if i == 0 else float(bh_holdings @ r)
+            bh_values.append(bh_values[-1] * (1 + bh_ret))
+            if i == 0:
+                bh_holdings = tw * (1 + r)
+                bh_holdings = bh_holdings / bh_holdings.sum()
+            else:
+                bh_holdings = bh_holdings * (1 + r)
+                bh_holdings = bh_holdings / bh_holdings.sum()
+
+        dates_str = ["start"] + [str(d.date()) if hasattr(d, "date") else str(d) for d in dates]
+
+        # Compute metrics for rebalanced
+        rebal_rets = np.diff(rebal_values) / rebal_values[:-1]
+        ppy = self._periods_per_year()
+        ann_ret = float((1 + np.mean(rebal_rets)) ** ppy - 1)
+        ann_vol = float(np.std(rebal_rets) * np.sqrt(ppy))
+        sharpe = float(ann_ret / ann_vol) if ann_vol > 0 else 0.0
+        cum_max = np.maximum.accumulate(rebal_values)
+        dd = (np.array(rebal_values) - cum_max) / cum_max
+        max_dd = float(dd.min())
+
+        return {
+            "dates": dates_str,
+            "rebalanced": rebal_values,
+            "buy_and_hold": bh_values,
+            "rebalance_freq": rebalance_freq,
+            "metrics": {
+                "ann_return": ann_ret,
+                "ann_vol": ann_vol,
+                "sharpe": sharpe,
+                "max_drawdown": max_dd,
+                "total_return": float(rebal_values[-1] / rebal_values[0] - 1),
+            },
+        }
+
+    # ------------------------------------------------------------------
     # Performance analytics
     # ------------------------------------------------------------------
 

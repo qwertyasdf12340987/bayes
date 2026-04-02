@@ -3,13 +3,15 @@ backend_main.py — FastAPI REST API
 Start locally: uvicorn backend_main:app --reload
 """
 
+import io
 import os
 import traceback
 from typing import List, Optional
 
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+import yfinance as yf
+from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -82,6 +84,25 @@ class OptimizeReq(BaseModel):
     risk_free_rate: float = 0.0
     long_only: bool = True
     max_position: float = 0.40
+
+
+class SimulateReq(BaseModel):
+    tickers: List[str]
+    weights: List[float]
+    start_date: str
+    end_date: str
+    n_simulations: int = 5000
+    horizon_months: int = 12
+    expected_returns: Optional[dict] = None
+
+
+class BacktestReq(BaseModel):
+    tickers: List[str]
+    weights: List[float]
+    start_date: str
+    end_date: str
+    rebalance_freq: str = "quarterly"
+    target_weights: Optional[List[float]] = None
 
 
 class TradeReq(BaseModel):
@@ -196,6 +217,167 @@ def optimize(req: OptimizeReq):
         tb = traceback.format_exc()
         print(f"ERROR in /optimize:\n{tb}")
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
+
+
+# ── Monte Carlo ──────────────────────────────────────────────────────────────
+@app.post("/simulate")
+def simulate(req: SimulateReq):
+    try:
+        a = PortfolioAnalyzer(
+            req.tickers, req.weights,
+            req.start_date, req.end_date, "monthly",
+        )
+        a.fetch_prices()
+        return a.monte_carlo(
+            n_simulations=req.n_simulations,
+            horizon_months=req.horizon_months,
+            expected_returns=req.expected_returns,
+        )
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"ERROR in /simulate:\n{tb}")
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
+
+
+# ── Backtest ─────────────────────────────────────────────────────────────────
+@app.post("/backtest")
+def backtest(req: BacktestReq):
+    try:
+        a = PortfolioAnalyzer(
+            req.tickers, req.weights,
+            req.start_date, req.end_date, "monthly",
+        )
+        a.fetch_prices()
+        return a.backtest(
+            rebalance_freq=req.rebalance_freq,
+            target_weights=req.target_weights,
+        )
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"ERROR in /backtest:\n{tb}")
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
+
+
+# ── Signals / Alt Data ───────────────────────────────────────────────────────
+_signals_cache: dict = {}
+
+@app.get("/signals/{ticker}")
+def get_signals(ticker: str):
+    import time
+    ticker = ticker.upper()
+    cached = _signals_cache.get(ticker)
+    if cached and time.time() - cached["_ts"] < 3600:
+        return cached
+
+    try:
+        info = yf.Ticker(ticker).info
+    except Exception:
+        info = {}
+
+    try:
+        options = yf.Ticker(ticker).options
+        if options:
+            chain = yf.Ticker(ticker).option_chain(options[0])
+            pc_ratio = round(chain.puts["openInterest"].sum() / max(chain.calls["openInterest"].sum(), 1), 2)
+        else:
+            pc_ratio = None
+    except Exception:
+        pc_ratio = None
+
+    result = {
+        "ticker": ticker,
+        "name": info.get("shortName", ticker),
+        "sector": info.get("sector", "—"),
+        "market_cap": info.get("marketCap"),
+        "pe_ratio": info.get("trailingPE"),
+        "forward_pe": info.get("forwardPE"),
+        "dividend_yield": info.get("dividendYield"),
+        "beta": info.get("beta"),
+        "fifty_two_week_high": info.get("fiftyTwoWeekHigh"),
+        "fifty_two_week_low": info.get("fiftyTwoWeekLow"),
+        "avg_volume": info.get("averageVolume"),
+        "earnings_date": str(info.get("earningsDate", "")) if info.get("earningsDate") else None,
+        "recommendation": info.get("recommendationKey"),
+        "target_price": info.get("targetMeanPrice"),
+        "analyst_count": info.get("numberOfAnalystOpinions"),
+        "put_call_ratio": pc_ratio,
+        "short_percent": info.get("shortPercentOfFloat"),
+        "_ts": time.time(),
+    }
+    _signals_cache[ticker] = result
+    return result
+
+
+@app.get("/macro")
+def get_macro():
+    """Basic macro indicators from yfinance."""
+    import time
+    cached = _signals_cache.get("__macro__")
+    if cached and time.time() - cached["_ts"] < 3600:
+        return cached
+
+    indicators = {}
+    try:
+        vix = yf.Ticker("^VIX").info
+        indicators["vix"] = vix.get("regularMarketPrice") or vix.get("previousClose")
+    except Exception:
+        indicators["vix"] = None
+
+    try:
+        tnx = yf.Ticker("^TNX").info
+        indicators["us10y"] = tnx.get("regularMarketPrice") or tnx.get("previousClose")
+    except Exception:
+        indicators["us10y"] = None
+
+    try:
+        irx = yf.Ticker("^IRX").info
+        indicators["us3m"] = irx.get("regularMarketPrice") or irx.get("previousClose")
+    except Exception:
+        indicators["us3m"] = None
+
+    try:
+        spy_info = yf.Ticker("SPY").info
+        indicators["spy_price"] = spy_info.get("regularMarketPrice") or spy_info.get("previousClose")
+        indicators["spy_pe"] = spy_info.get("trailingPE")
+    except Exception:
+        indicators["spy_price"] = None
+
+    indicators["_ts"] = time.time()
+    _signals_cache["__macro__"] = indicators
+    return indicators
+
+
+# ── CSV Import ───────────────────────────────────────────────────────────────
+@app.post("/import/csv")
+async def import_csv(file: UploadFile):
+    """Import trades from a CSV file. Expected columns: ticker, date, action, quantity, price"""
+    content = await file.read()
+    df = pd.read_csv(io.BytesIO(content))
+    # Normalise column names
+    df.columns = [c.strip().lower() for c in df.columns]
+    col_map = {"symbol": "ticker", "trade_date": "date"}
+    df = df.rename(columns=col_map)
+
+    required = {"ticker", "date", "action", "quantity", "price"}
+    if not required.issubset(set(df.columns)):
+        raise HTTPException(400, f"CSV must have columns: {required}. Got: {list(df.columns)}")
+
+    db = get_db()
+    count = 0
+    for _, row in df.iterrows():
+        try:
+            db.add_trade(
+                ticker=str(row["ticker"]).upper().strip(),
+                trade_date=str(row["date"]),
+                action=str(row["action"]).upper().strip(),
+                quantity=float(row["quantity"]),
+                price=float(row["price"]),
+                notes=str(row.get("notes", "")),
+            )
+            count += 1
+        except Exception:
+            continue
+    return {"imported": count}
 
 
 # ── Trades ────────────────────────────────────────────────────────────────────
