@@ -11,11 +11,10 @@ from typing import List, Optional
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from fastapi import Depends, FastAPI, HTTPException, UploadFile, status
+from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from auth import create_access_token, hash_password, require_user, verify_password
 from db import TradeDB
 from portfolio_analyzer import PortfolioAnalyzer
 
@@ -24,7 +23,7 @@ app = FastAPI(title="Bayes Portfolio API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -34,7 +33,7 @@ app.add_middleware(
 def get_db() -> TradeDB:
     return TradeDB(
         supabase_url=os.getenv("SUPABASE_URL", ""),
-        supabase_key=os.getenv("SUPABASE_SERVICE_ROLE_KEY", os.getenv("SUPABASE_KEY", "")),
+        supabase_key=os.getenv("SUPABASE_KEY", ""),
     )
 
 
@@ -107,7 +106,6 @@ class BacktestReq(BaseModel):
 
 
 class TradeReq(BaseModel):
-    portfolio_id: int
     ticker: str
     trade_date: str
     action: str
@@ -116,184 +114,18 @@ class TradeReq(BaseModel):
     notes: str = ""
 
 
-class SignupReq(BaseModel):
-    email: str
-    password: str
-    name: str = ""
-
-
-class LoginReq(BaseModel):
-    email: str
-    password: str
-
-
-class PortfolioReq(BaseModel):
-    name: str
-    tickers: List[str]
-    weights: List[float]
-    start_date: str = ""
-    end_date: str = ""
-
-
-class PortfolioUpdateReq(BaseModel):
-    name: Optional[str] = None
-    tickers: Optional[List[str]] = None
-    weights: Optional[List[float]] = None
-    start_date: Optional[str] = None
-    end_date: Optional[str] = None
-
-
-def _normalise_tickers(tickers: List[str]) -> List[str]:
-    cleaned = [t.upper().strip() for t in tickers if t and t.strip()]
-    if not cleaned:
-        raise HTTPException(status_code=400, detail="At least one ticker is required")
-    return cleaned
-
-
-def _validate_weights(tickers: List[str], weights: List[float]) -> List[float]:
-    if len(tickers) != len(weights):
-        raise HTTPException(status_code=400, detail="Tickers and weights must have the same length")
-    weights = [float(w) for w in weights]
-    if not any(abs(w) > 1e-12 for w in weights):
-        raise HTTPException(status_code=400, detail="Weights must not all be zero")
-    return weights
-
-
-def _validate_portfolio_dates(start_date: str, end_date: str) -> None:
-    if start_date and end_date and start_date > end_date:
-        raise HTTPException(status_code=400, detail="start_date must be on or before end_date")
-
-
-def _get_owned_portfolio(db: TradeDB, portfolio_id: int, user_id: int) -> dict:
-    portfolio = db.get_portfolio_by_id(portfolio_id, user_id)
-    if not portfolio:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
-    return portfolio
-
-
-def _token_payload(user: dict) -> dict:
-    return {
-        "access_token": create_access_token(
-            {"sub": str(user["id"]), "email": user["email"], "name": user.get("name", "")}
-        ),
-        "token_type": "bearer",
-        "user": {"id": user["id"], "email": user["email"], "name": user.get("name", "")},
-    }
-
-
 # ── Health ────────────────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 
-@app.post("/auth/signup")
-def signup(req: SignupReq):
-    db = get_db()
-    email = req.email.lower().strip()
-    if not email or "@" not in email:
-        raise HTTPException(status_code=400, detail="A valid email is required")
-    if len(req.password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
-    if db.get_user_by_email(email):
-        raise HTTPException(status_code=409, detail="An account with that email already exists")
-
-    user = db.create_user(email=email, name=req.name.strip(), password_hash=hash_password(req.password))
-    db.create_portfolio(
-        user_id=user["id"],
-        name="Personal Portfolio",
-        tickers=[],
-        weights=[],
-    )
-    return _token_payload(user)
-
-
-@app.post("/auth/login")
-def login(req: LoginReq):
-    db = get_db()
-    user = db.get_user_by_email(req.email)
-    if not user or not verify_password(req.password, user["password_hash"]):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
-        )
-    return _token_payload(user)
-
-
-@app.get("/auth/me")
-def me(user: dict = Depends(require_user)):
-    return {"id": user["id"], "email": user["email"], "name": user.get("name", "")}
-
-
-@app.get("/portfolios")
-def list_portfolios(user: dict = Depends(require_user)):
-    return get_db().get_portfolios(user["id"])
-
-
-@app.post("/portfolios")
-def create_portfolio(req: PortfolioReq, user: dict = Depends(require_user)):
-    tickers = _normalise_tickers(req.tickers) if req.tickers else []
-    weights = _validate_weights(tickers, req.weights) if tickers or req.weights else []
-    _validate_portfolio_dates(req.start_date, req.end_date)
-    return get_db().create_portfolio(
-        user_id=user["id"],
-        name=req.name.strip() or "Untitled Portfolio",
-        tickers=tickers,
-        weights=weights,
-        start_date=req.start_date,
-        end_date=req.end_date,
-    )
-
-
-@app.put("/portfolios/{portfolio_id}")
-def update_portfolio(portfolio_id: int, req: PortfolioUpdateReq, user: dict = Depends(require_user)):
-    db = get_db()
-    existing = _get_owned_portfolio(db, portfolio_id, user["id"])
-
-    updates = req.model_dump(exclude_none=True)
-    if "tickers" in updates:
-        updates["tickers"] = _normalise_tickers(updates["tickers"])
-    if "weights" in updates or "tickers" in updates:
-        tickers = updates.get("tickers")
-        if tickers is None:
-            tickers = existing["tickers"]
-        weights = updates.get("weights")
-        if weights is None:
-            weights = existing["weights"]
-        updates["weights"] = _validate_weights(tickers, weights)
-        updates["tickers"] = tickers
-
-    _validate_portfolio_dates(
-        updates.get("start_date", existing.get("start_date", "")),
-        updates.get("end_date", existing.get("end_date", "")),
-    )
-
-    updated = db.update_portfolio(portfolio_id, user["id"], **updates)
-    if not updated:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
-    return updated
-
-
-@app.delete("/portfolios/{portfolio_id}")
-def delete_portfolio(portfolio_id: int, user: dict = Depends(require_user)):
-    db = get_db()
-    portfolios = db.get_portfolios(user["id"])
-    if len(portfolios) <= 1:
-        raise HTTPException(status_code=400, detail="At least one portfolio must remain")
-    if not db.delete_portfolio(portfolio_id, user["id"]):
-        raise HTTPException(status_code=404, detail="Portfolio not found")
-    return {"ok": True}
-
-
 # ── Analysis ──────────────────────────────────────────────────────────────────
 @app.post("/analyze")
 def analyze(req: AnalyzeReq):
     try:
-        tickers = _normalise_tickers(req.tickers)
-        weights = _validate_weights(tickers, req.weights)
-        _validate_portfolio_dates(req.start_date, req.end_date)
         a = PortfolioAnalyzer(
-            tickers, weights,
+            req.tickers, req.weights,
             req.start_date, req.end_date, "monthly",
         )
         a.fetch_prices()
@@ -303,8 +135,6 @@ def analyze(req: AnalyzeReq):
         mdd = a.max_drawdown()
         rolling = a.rolling_factor_betas(window=36)
         bench   = a.benchmark_returns("SPY")
-        oil_exp = a.oil_exposure()
-        rates_exp = a.rates_exposure()
 
         return {
             "ff": {
@@ -318,10 +148,8 @@ def analyze(req: AnalyzeReq):
             "mrc":           a.marginal_risk_contributions().to_dict(),
             "port_vol":      a.portfolio_volatility(),
             "port_returns":  _series(a.portfolio_returns),
-            "stock_returns": {t: _series(a.returns[t]) for t in tickers},
+            "stock_returns": {t: _series(a.returns[t]) for t in req.tickers},
             "benchmark":     _series(bench),
-            "oil_exposure":  oil_exp,
-            "rates_exposure": rates_exp,
             "rolling_betas": _df(rolling) if not rolling.empty else [],
             "sharpe":        a.sharpe_ratio(),
             "sortino":       a.sortino_ratio(),
@@ -340,11 +168,8 @@ def analyze(req: AnalyzeReq):
 @app.post("/hedges")
 def hedges(req: HedgeReq):
     try:
-        tickers = _normalise_tickers(req.tickers)
-        weights = _validate_weights(tickers, req.weights)
-        _validate_portfolio_dates(req.start_date, req.end_date)
         a = PortfolioAnalyzer(
-            tickers, weights,
+            req.tickers, req.weights,
             req.start_date, req.end_date, "monthly",
         )
         a.fetch_prices()
@@ -361,11 +186,8 @@ def hedges(req: HedgeReq):
 @app.post("/optimize")
 def optimize(req: OptimizeReq):
     try:
-        tickers = _normalise_tickers(req.tickers)
-        weights = _validate_weights(tickers, req.weights)
-        _validate_portfolio_dates(req.start_date, req.end_date)
         a = PortfolioAnalyzer(
-            tickers, weights,
+            req.tickers, req.weights,
             req.start_date, req.end_date, "monthly",
         )
         a.fetch_prices()
@@ -375,9 +197,9 @@ def optimize(req: OptimizeReq):
             long_only=req.long_only,
             max_position=req.max_position,
         )
-        total = sum(weights)
+        total = sum(req.weights)
         adjustments = {}
-        for t in tickers:
+        for t in req.tickers:
             cur_d = result["current_weights"][t] * total
             opt_d = result["optimal_weights"][t] * total
             adjustments[t] = {
@@ -401,11 +223,8 @@ def optimize(req: OptimizeReq):
 @app.post("/simulate")
 def simulate(req: SimulateReq):
     try:
-        tickers = _normalise_tickers(req.tickers)
-        weights = _validate_weights(tickers, req.weights)
-        _validate_portfolio_dates(req.start_date, req.end_date)
         a = PortfolioAnalyzer(
-            tickers, weights,
+            req.tickers, req.weights,
             req.start_date, req.end_date, "monthly",
         )
         a.fetch_prices()
@@ -424,11 +243,8 @@ def simulate(req: SimulateReq):
 @app.post("/backtest")
 def backtest(req: BacktestReq):
     try:
-        tickers = _normalise_tickers(req.tickers)
-        weights = _validate_weights(tickers, req.weights)
-        _validate_portfolio_dates(req.start_date, req.end_date)
         a = PortfolioAnalyzer(
-            tickers, weights,
+            req.tickers, req.weights,
             req.start_date, req.end_date, "monthly",
         )
         a.fetch_prices()
@@ -533,14 +349,8 @@ def get_macro():
 
 # ── CSV Import ───────────────────────────────────────────────────────────────
 @app.post("/import/csv")
-async def import_csv(
-    file: UploadFile,
-    portfolio_id: int,
-    user: dict = Depends(require_user),
-):
+async def import_csv(file: UploadFile):
     """Import trades from a CSV file. Expected columns: ticker, date, action, quantity, price"""
-    db = get_db()
-    _get_owned_portfolio(db, portfolio_id, user["id"])
     content = await file.read()
     df = pd.read_csv(io.BytesIO(content))
     # Normalise column names
@@ -552,6 +362,7 @@ async def import_csv(
     if not required.issubset(set(df.columns)):
         raise HTTPException(400, f"CSV must have columns: {required}. Got: {list(df.columns)}")
 
+    db = get_db()
     count = 0
     for _, row in df.iterrows():
         try:
@@ -562,7 +373,6 @@ async def import_csv(
                 quantity=float(row["quantity"]),
                 price=float(row["price"]),
                 notes=str(row.get("notes", "")),
-                portfolio_id=portfolio_id,
             )
             count += 1
         except Exception:
@@ -572,59 +382,39 @@ async def import_csv(
 
 # ── Trades ────────────────────────────────────────────────────────────────────
 @app.get("/trades")
-def get_trades(portfolio_id: int, user: dict = Depends(require_user)):
-    db = get_db()
-    _get_owned_portfolio(db, portfolio_id, user["id"])
-    return db.get_trades(user_id=user["id"], portfolio_id=portfolio_id).to_dict(orient="records")
+def get_trades():
+    return get_db().get_trades().to_dict(orient="records")
 
 
 @app.post("/trades")
-def add_trade(t: TradeReq, user: dict = Depends(require_user)):
-    db = get_db()
-    _get_owned_portfolio(db, t.portfolio_id, user["id"])
-    db.add_trade(
-        t.ticker,
-        t.trade_date,
-        t.action,
-        t.quantity,
-        t.price,
-        t.notes,
-        portfolio_id=t.portfolio_id,
-    )
+def add_trade(t: TradeReq):
+    get_db().add_trade(t.ticker, t.trade_date, t.action, t.quantity, t.price, t.notes)
     return {"ok": True}
 
 
 @app.delete("/trades/{trade_id}")
-def delete_trade(trade_id: int, user: dict = Depends(require_user)):
-    deleted = get_db().delete_trade(trade_id, user_id=user["id"])
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Trade not found")
+def delete_trade(trade_id: int):
+    get_db().delete_trade(trade_id)
     return {"ok": True}
 
 
 @app.get("/portfolio")
-def get_portfolio(portfolio_id: int, user: dict = Depends(require_user)):
+def get_portfolio():
     db = get_db()
-    portfolio = _get_owned_portfolio(db, portfolio_id, user["id"])
-    tickers, weights = db.get_portfolio(user_id=user["id"], portfolio_id=portfolio_id)
+    tickers, weights = db.get_portfolio()
     return {
-        "portfolio": portfolio,
         "tickers":   tickers,
         "weights":   weights,
-        "positions": db.get_positions_summary(user_id=user["id"], portfolio_id=portfolio_id).to_dict(orient="records"),
+        "positions": db.get_positions_summary().to_dict(orient="records"),
     }
 
 
 @app.get("/pnl")
-def get_pnl(portfolio_id: int, user: dict = Depends(require_user)):
-    db = get_db()
-    _get_owned_portfolio(db, portfolio_id, user["id"])
-    pnl = db.get_unrealized_pnl(user_id=user["id"], portfolio_id=portfolio_id)
+def get_pnl():
+    pnl = get_db().get_unrealized_pnl()
     return pnl.to_dict(orient="records") if not pnl.empty else []
 
 
 @app.get("/portfolio-value")
-def get_portfolio_value(portfolio_id: int, user: dict = Depends(require_user)):
-    db = get_db()
-    _get_owned_portfolio(db, portfolio_id, user["id"])
-    return _series(db.get_portfolio_value_history(user_id=user["id"], portfolio_id=portfolio_id))
+def get_portfolio_value():
+    return _series(get_db().get_portfolio_value_history())
