@@ -60,7 +60,13 @@ export default function Sidebar({ loading, setLoading, setResult, setParams, set
   return (
     <div className="w-64 shrink-0 bg-[#0d0d16] border-r border-border flex flex-col h-full overflow-y-auto">
       <div className="p-5 border-b border-border">
-        <div className="text-xl font-extrabold text-txt">📊 Bayes</div>
+        <div className="flex items-center gap-2">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" className="text-accent">
+            <path d="M2 20 C6 20, 6 4, 12 4 S18 20, 22 20" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" fill="none"/>
+            <path d="M2 20 C6 20, 8 10, 12 10 S18 20, 22 20" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none" opacity="0.4"/>
+          </svg>
+          <span className="text-xl font-extrabold text-txt">Bayes</span>
+        </div>
       </div>
 
       <div className="p-4 flex-1 flex flex-col gap-4">

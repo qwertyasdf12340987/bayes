@@ -91,7 +91,10 @@ export default function App() {
 function Landing() {
   return (
     <div className="flex flex-col items-center justify-center h-[60vh] text-center gap-4">
-      <div className="text-6xl">📊</div>
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" className="text-accent">
+        <path d="M2 20 C6 20, 6 4, 12 4 S18 20, 22 20" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" fill="none"/>
+        <path d="M2 20 C6 20, 8 10, 12 10 S18 20, 22 20" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none" opacity="0.4"/>
+      </svg>
       <h1 className="text-3xl font-extrabold text-txt">Bayes</h1>
       <p className="text-txt2 max-w-md">
         Enter your holdings in the sidebar, choose a date range,
