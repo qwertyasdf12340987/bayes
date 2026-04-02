@@ -1,9 +1,26 @@
+import { getToken } from "./auth";
+
 const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+
+function authHeaders(): Record<string, string> {
+  const token = getToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
 async function post<T>(path: string, body: unknown): Promise<T> {
   const r = await fetch(`${BASE}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error((await r.json()).detail ?? r.statusText);
+  return r.json();
+}
+
+async function put<T>(path: string, body: unknown): Promise<T> {
+  const r = await fetch(`${BASE}${path}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(body),
   });
   if (!r.ok) throw new Error((await r.json()).detail ?? r.statusText);
@@ -11,13 +28,13 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 }
 
 async function get<T>(path: string): Promise<T> {
-  const r = await fetch(`${BASE}${path}`);
+  const r = await fetch(`${BASE}${path}`, { headers: authHeaders() });
   if (!r.ok) throw new Error((await r.json()).detail ?? r.statusText);
   return r.json();
 }
 
 async function del(path: string) {
-  const r = await fetch(`${BASE}${path}`, { method: "DELETE" });
+  const r = await fetch(`${BASE}${path}`, { method: "DELETE", headers: authHeaders() });
   if (!r.ok) throw new Error(r.statusText);
 }
 
@@ -136,7 +153,23 @@ export type MacroData = {
   spy_pe: number | null;
 };
 
+export type AuthUser = { id: number; email: string; name: string };
+export type AuthResponse = { token: string; user: AuthUser };
+export type SavedPortfolio = {
+  id: number; user_id: number; name: string;
+  tickers: string[]; weights: number[];
+  start_date: string; end_date: string;
+  created_at: string; updated_at: string;
+};
+
 export const api = {
+  signup:          (b: object) => post<AuthResponse>("/auth/signup", b),
+  login:           (b: object) => post<AuthResponse>("/auth/login", b),
+  me:              ()          => get<AuthUser>("/auth/me"),
+  getPortfolios:   ()          => get<SavedPortfolio[]>("/portfolios"),
+  createPortfolio: (b: object) => post<SavedPortfolio>("/portfolios", b),
+  updatePortfolio: (id: number, b: object) => put<SavedPortfolio>(`/portfolios/${id}`, b),
+  deletePortfolio: (id: number) => del(`/portfolios/${id}`),
   analyze:        (b: object) => post<AnalysisResult>("/analyze", b),
   hedges:         (b: object) => post<{ factor_hedges: HedgeRow[]; industry_hedges: HedgeRow[] }>("/hedges", b),
   optimize:       (b: object) => post<OptimizeResult>("/optimize", b),

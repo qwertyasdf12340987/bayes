@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react";
-import { api, AnalysisResult } from "../api";
+import { api, AnalysisResult, SavedPortfolio } from "../api";
+import { isLoggedIn } from "../auth";
 import { PortfolioParams } from "../App";
+import PortfolioSelector from "./PortfolioSelector";
 
 type Props = {
   loading: boolean;
@@ -142,6 +144,23 @@ export default function Sidebar({ loading, setLoading, setResult, setParams, set
             className="accent-accent w-4 h-4" />
           Industry analysis
         </label>
+
+        {isLoggedIn() && (
+          <div className="border-t border-border pt-4">
+            <PortfolioSelector
+              tickers={tickers}
+              weights={weights}
+              startDate={startDate}
+              endDate={endDate}
+              onLoad={(p: SavedPortfolio) => {
+                setRows(p.tickers.map((t, i) => ({ ticker: t, amount: p.weights[i] ?? 1000 })));
+                if (p.start_date) setStart(p.start_date);
+                if (p.end_date) setEnd(p.end_date);
+                setSource("manual");
+              }}
+            />
+          </div>
+        )}
       </div>
 
       <div className="p-4 border-t border-border">

@@ -5,9 +5,10 @@ Automatically uses:
   - SQLite    otherwise (local development, stored in trades.db)
 """
 
+import json
 import sqlite3
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import pandas as pd
 import yfinance as yf
@@ -25,6 +26,32 @@ SQLITE_PATH = Path(__file__).parent / "trades.db"
 
 # Supabase SQL to create the table (paste into Supabase SQL Editor):
 SUPABASE_DDL = """
+-- Run in Supabase SQL Editor:
+
+CREATE TABLE public.users (
+    id          bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    email       text   NOT NULL UNIQUE,
+    name        text   NOT NULL DEFAULT '',
+    password_hash text NOT NULL,
+    created_at  timestamptz DEFAULT now()
+);
+ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow all" ON public.users FOR ALL USING (true);
+
+CREATE TABLE public.portfolios (
+    id          bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    user_id     bigint NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    name        text   NOT NULL,
+    tickers_json text  NOT NULL DEFAULT '[]',
+    weights_json text  NOT NULL DEFAULT '[]',
+    start_date  text   NOT NULL DEFAULT '',
+    end_date    text   NOT NULL DEFAULT '',
+    created_at  timestamptz DEFAULT now(),
+    updated_at  timestamptz DEFAULT now()
+);
+ALTER TABLE public.portfolios ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow all" ON public.portfolios FOR ALL USING (true);
+
 CREATE TABLE public.trades (
     id      bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     ticker  text   NOT NULL,
@@ -68,6 +95,28 @@ class TradeDB:
     # ── SQLite init ───────────────────────────────────────────────────────
     def _init_sqlite(self) -> None:
         with sqlite3.connect(SQLITE_PATH) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email         TEXT NOT NULL UNIQUE,
+                    name          TEXT NOT NULL DEFAULT '',
+                    password_hash TEXT NOT NULL,
+                    created_at    TEXT DEFAULT (datetime('now'))
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS portfolios (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    name         TEXT NOT NULL,
+                    tickers_json TEXT NOT NULL DEFAULT '[]',
+                    weights_json TEXT NOT NULL DEFAULT '[]',
+                    start_date   TEXT NOT NULL DEFAULT '',
+                    end_date     TEXT NOT NULL DEFAULT '',
+                    created_at   TEXT DEFAULT (datetime('now')),
+                    updated_at   TEXT DEFAULT (datetime('now'))
+                )
+            """)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS trades (
                     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -293,6 +342,118 @@ class TradeDB:
                 port_values[day] = val
 
         return pd.Series(port_values, name="Portfolio Value")
+
+    # ── Users ─────────────────────────────────────────────────────────────
+    def create_user(self, email: str, name: str, password_hash: str) -> dict:
+        if self._backend == "sqlite":
+            with sqlite3.connect(SQLITE_PATH) as conn:
+                cur = conn.execute(
+                    "INSERT INTO users (email, name, password_hash) VALUES (?,?,?)",
+                    (email.lower().strip(), name.strip(), password_hash),
+                )
+                return {"id": cur.lastrowid, "email": email, "name": name}
+        else:
+            resp = self._sb.table("users").insert(
+                {"email": email.lower().strip(), "name": name.strip(), "password_hash": password_hash}
+            ).execute()
+            row = resp.data[0]
+            return {"id": row["id"], "email": row["email"], "name": row["name"]}
+
+    def get_user_by_email(self, email: str) -> Optional[dict]:
+        if self._backend == "sqlite":
+            with sqlite3.connect(SQLITE_PATH) as conn:
+                conn.row_factory = sqlite3.Row
+                cur = conn.execute("SELECT * FROM users WHERE email = ?", (email.lower().strip(),))
+                row = cur.fetchone()
+                return dict(row) if row else None
+        else:
+            resp = self._sb.table("users").select("*").eq("email", email.lower().strip()).execute()
+            return resp.data[0] if resp.data else None
+
+    # ── Portfolios ────────────────────────────────────────────────────────
+    def create_portfolio(
+        self, user_id: int, name: str,
+        tickers: List[str], weights: List[float],
+        start_date: str, end_date: str,
+    ) -> dict:
+        tj = json.dumps(tickers)
+        wj = json.dumps(weights)
+        if self._backend == "sqlite":
+            with sqlite3.connect(SQLITE_PATH) as conn:
+                cur = conn.execute(
+                    "INSERT INTO portfolios (user_id, name, tickers_json, weights_json, start_date, end_date) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (user_id, name, tj, wj, start_date, end_date),
+                )
+                return self._portfolio_row(cur.lastrowid, user_id, name, tickers, weights, start_date, end_date)
+        else:
+            resp = self._sb.table("portfolios").insert({
+                "user_id": user_id, "name": name,
+                "tickers_json": tj, "weights_json": wj,
+                "start_date": start_date, "end_date": end_date,
+            }).execute()
+            return self._parse_portfolio_row(resp.data[0])
+
+    def get_portfolios(self, user_id: int) -> List[dict]:
+        if self._backend == "sqlite":
+            with sqlite3.connect(SQLITE_PATH) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT * FROM portfolios WHERE user_id = ? ORDER BY updated_at DESC", (user_id,)
+                ).fetchall()
+                return [self._parse_portfolio_row(dict(r)) for r in rows]
+        else:
+            resp = self._sb.table("portfolios").select("*").eq("user_id", user_id).order("updated_at", desc=True).execute()
+            return [self._parse_portfolio_row(r) for r in resp.data]
+
+    def update_portfolio(
+        self, portfolio_id: int, user_id: int, name: str,
+        tickers: List[str], weights: List[float],
+        start_date: str, end_date: str,
+    ) -> dict:
+        tj = json.dumps(tickers)
+        wj = json.dumps(weights)
+        if self._backend == "sqlite":
+            with sqlite3.connect(SQLITE_PATH) as conn:
+                conn.execute(
+                    "UPDATE portfolios SET name=?, tickers_json=?, weights_json=?, "
+                    "start_date=?, end_date=?, updated_at=datetime('now') "
+                    "WHERE id=? AND user_id=?",
+                    (name, tj, wj, start_date, end_date, portfolio_id, user_id),
+                )
+            return self._portfolio_row(portfolio_id, user_id, name, tickers, weights, start_date, end_date)
+        else:
+            resp = self._sb.table("portfolios").update({
+                "name": name, "tickers_json": tj, "weights_json": wj,
+                "start_date": start_date, "end_date": end_date,
+            }).eq("id", portfolio_id).eq("user_id", user_id).execute()
+            return self._parse_portfolio_row(resp.data[0])
+
+    def delete_portfolio(self, portfolio_id: int, user_id: int) -> None:
+        if self._backend == "sqlite":
+            with sqlite3.connect(SQLITE_PATH) as conn:
+                conn.execute("DELETE FROM portfolios WHERE id=? AND user_id=?", (portfolio_id, user_id))
+        else:
+            self._sb.table("portfolios").delete().eq("id", portfolio_id).eq("user_id", user_id).execute()
+
+    @staticmethod
+    def _parse_portfolio_row(row: dict) -> dict:
+        return {
+            "id":         row["id"],
+            "user_id":    row["user_id"],
+            "name":       row["name"],
+            "tickers":    json.loads(row.get("tickers_json", "[]")),
+            "weights":    json.loads(row.get("weights_json", "[]")),
+            "start_date": row.get("start_date", ""),
+            "end_date":   row.get("end_date", ""),
+            "created_at": row.get("created_at", ""),
+            "updated_at": row.get("updated_at", ""),
+        }
+
+    @staticmethod
+    def _portfolio_row(pid, uid, name, tickers, weights, start_date, end_date) -> dict:
+        return {"id": pid, "user_id": uid, "name": name, "tickers": tickers,
+                "weights": weights, "start_date": start_date, "end_date": end_date}
 
     @property
     def backend(self) -> str:

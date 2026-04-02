@@ -11,10 +11,11 @@ from typing import List, Optional
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from auth import create_token, hash_password, require_user, verify_password
 from db import TradeDB
 from portfolio_analyzer import PortfolioAnalyzer
 
@@ -114,10 +115,84 @@ class TradeReq(BaseModel):
     notes: str = ""
 
 
+class SignupReq(BaseModel):
+    email: str
+    password: str
+    name: str = ""
+
+
+class LoginReq(BaseModel):
+    email: str
+    password: str
+
+
+class PortfolioSaveReq(BaseModel):
+    name: str
+    tickers: List[str]
+    weights: List[float]
+    start_date: str
+    end_date: str
+
+
 # ── Health ────────────────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+@app.post("/auth/signup")
+def signup(req: SignupReq):
+    db = get_db()
+    if db.get_user_by_email(req.email):
+        raise HTTPException(400, "Email already registered")
+    hashed = hash_password(req.password)
+    user = db.create_user(req.email, req.name or req.email.split("@")[0], hashed)
+    token = create_token(user["id"], user["email"], user["name"])
+    return {"token": token, "user": {"id": user["id"], "email": user["email"], "name": user["name"]}}
+
+
+@app.post("/auth/login")
+def login(req: LoginReq):
+    db = get_db()
+    user = db.get_user_by_email(req.email)
+    if not user or not verify_password(req.password, user["password_hash"]):
+        raise HTTPException(401, "Invalid email or password")
+    token = create_token(user["id"], user["email"], user["name"])
+    return {"token": token, "user": {"id": user["id"], "email": user["email"], "name": user["name"]}}
+
+
+@app.get("/auth/me")
+def me(current_user: dict = Depends(require_user)):
+    return {"id": int(current_user["sub"]), "email": current_user["email"], "name": current_user["name"]}
+
+
+# ── Portfolios ────────────────────────────────────────────────────────────────
+@app.get("/portfolios")
+def list_portfolios(current_user: dict = Depends(require_user)):
+    return get_db().get_portfolios(int(current_user["sub"]))
+
+
+@app.post("/portfolios")
+def create_portfolio(req: PortfolioSaveReq, current_user: dict = Depends(require_user)):
+    return get_db().create_portfolio(
+        int(current_user["sub"]), req.name,
+        req.tickers, req.weights, req.start_date, req.end_date,
+    )
+
+
+@app.put("/portfolios/{portfolio_id}")
+def update_portfolio(portfolio_id: int, req: PortfolioSaveReq, current_user: dict = Depends(require_user)):
+    return get_db().update_portfolio(
+        portfolio_id, int(current_user["sub"]), req.name,
+        req.tickers, req.weights, req.start_date, req.end_date,
+    )
+
+
+@app.delete("/portfolios/{portfolio_id}")
+def delete_portfolio(portfolio_id: int, current_user: dict = Depends(require_user)):
+    get_db().delete_portfolio(portfolio_id, int(current_user["sub"]))
+    return {"ok": True}
 
 
 # ── Analysis ──────────────────────────────────────────────────────────────────

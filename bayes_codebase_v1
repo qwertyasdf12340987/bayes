@@ -1,8 +1,0 @@
-from portfolio_analyzer import PortfolioAnalyzer
-
-
-analyzer = PortfolioAnalyzer(
-    tickers=["AAPL", "MSFT", "NVDA", "JPM", "XOM"],
-    weights=[0.25, 0.25, 0.20, 0.15, 0.15],
-    start_date="2019-01-01",)
-analyzer.run()
