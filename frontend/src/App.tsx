@@ -92,7 +92,7 @@ function Landing() {
   return (
     <div className="flex flex-col items-center justify-center h-[60vh] text-center gap-4">
       <div className="text-6xl">📊</div>
-      <h1 className="text-3xl font-extrabold text-txt">Portfolio Analyzer</h1>
+      <h1 className="text-3xl font-extrabold text-txt">Bayes</h1>
       <p className="text-txt2 max-w-md">
         Enter your holdings in the sidebar, choose a date range,
         then click <span className="text-accent font-semibold">Run Analysis</span>.

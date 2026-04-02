@@ -60,8 +60,7 @@ export default function Sidebar({ loading, setLoading, setResult, setParams, set
   return (
     <div className="w-64 shrink-0 bg-[#0d0d16] border-r border-border flex flex-col h-full overflow-y-auto">
       <div className="p-5 border-b border-border">
-        <div className="text-xl font-extrabold text-txt">📊 Portfolio</div>
-        <div className="text-xs text-txt2 mt-0.5">Analyzer</div>
+        <div className="text-xl font-extrabold text-txt">📊 Bayes</div>
       </div>
 
       <div className="p-4 flex-1 flex flex-col gap-4">
