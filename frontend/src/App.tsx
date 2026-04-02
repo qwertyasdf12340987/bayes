@@ -6,10 +6,11 @@ import Industry from "./components/Industry";
 import Covariance from "./components/Covariance";
 import Analytics from "./components/Analytics";
 import Hedges from "./components/Hedges";
+import Optimizer from "./components/Optimizer";
 import TradeLog from "./components/TradeLog";
 import { AnalysisResult } from "./api";
 
-const TABS = ["Dashboard", "Factor Analysis", "Industry", "Covariance", "Analytics", "Hedges", "Trade Log"];
+const TABS = ["Dashboard", "Factor Analysis", "Industry", "Covariance", "Analytics", "Hedges", "Optimizer", "Trade Log"];
 
 export type PortfolioParams = {
   tickers: string[];
@@ -26,26 +27,45 @@ export default function App() {
   const [loading, setLoading]   = useState(false);
   const [error, setError]       = useState<string | null>(null);
 
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
   return (
     <div className="flex h-screen bg-bg overflow-hidden">
-      <Sidebar
-        loading={loading}
-        setLoading={setLoading}
-        setResult={setResult}
-        setParams={setParams}
-        setError={setError}
-        setTab={setTab}
-      />
+      {/* Mobile sidebar overlay */}
+      {sidebarOpen && (
+        <div className="fixed inset-0 bg-black/60 z-40 lg:hidden" onClick={() => setSidebarOpen(false)} />
+      )}
 
-      <div className="flex-1 flex flex-col overflow-hidden">
+      {/* Sidebar — hidden on mobile unless toggled */}
+      <div className={`fixed lg:static inset-y-0 left-0 z-50 transform transition-transform lg:transform-none ${
+        sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
+      }`}>
+        <Sidebar
+          loading={loading}
+          setLoading={setLoading}
+          setResult={setResult}
+          setParams={setParams}
+          setError={setError}
+          setTab={(i: number) => { setTab(i); setSidebarOpen(false); }}
+        />
+      </div>
+
+      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
         {/* Tab bar */}
-        <div className="flex items-center gap-1 px-6 pt-5 pb-0 bg-bg">
-          <div className="flex gap-1 bg-card rounded-xl p-1 border border-border">
+        <div className="flex items-center gap-2 px-3 sm:px-6 pt-4 pb-0 bg-bg">
+          {/* Mobile hamburger */}
+          <button onClick={() => setSidebarOpen(true)}
+            className="lg:hidden p-2 rounded-lg text-txt2 hover:text-txt hover:bg-card2">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M2 4.5h16M2 10h16M2 15.5h16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none"/>
+            </svg>
+          </button>
+          <div className="flex gap-1 bg-card rounded-xl p-1 border border-border overflow-x-auto scrollbar-hide">
             {TABS.map((t, i) => (
               <button
                 key={t}
                 onClick={() => setTab(i)}
-                className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
+                className={`px-3 sm:px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-all whitespace-nowrap ${
                   tab === i
                     ? "bg-gradient-to-r from-accent to-accent2 text-white shadow"
                     : "text-txt2 hover:text-txt"
@@ -58,7 +78,7 @@ export default function App() {
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className="flex-1 overflow-y-auto p-3 sm:p-6">
           {error && (
             <div className="mb-4 p-4 bg-neg/10 border border-neg/30 rounded-xl text-neg text-sm">
               {error}
@@ -67,10 +87,10 @@ export default function App() {
           {loading && (
             <div className="flex flex-col items-center justify-center h-64 gap-4">
               <div className="w-12 h-12 rounded-full border-2 border-accent border-t-transparent animate-spin" />
-              <p className="text-txt2">Downloading data & running regressions… (15–30 s)</p>
+              <p className="text-txt2">Downloading data & running regressions... (15-30 s)</p>
             </div>
           )}
-          {!loading && !result && tab !== 6 && (
+          {!loading && !result && tab !== 7 && (
             <Landing />
           )}
           {!loading && result && tab === 0 && <Dashboard result={result} />}
@@ -79,7 +99,8 @@ export default function App() {
           {!loading && result && tab === 3 && <Covariance result={result} />}
           {!loading && result && tab === 4 && <Analytics result={result} />}
           {!loading && result && tab === 5 && <Hedges result={result} params={params!} />}
-          {!loading && tab === 6 && <TradeLog onLoad={(t, w) => {
+          {!loading && result && tab === 6 && <Optimizer result={result} params={params!} />}
+          {!loading && tab === 7 && <TradeLog onLoad={(t, w) => {
             setParams(p => p ? { ...p, tickers: t, weights: w } : null);
           }} />}
         </div>
@@ -100,19 +121,19 @@ function Landing() {
         Enter your holdings in the sidebar, choose a date range,
         then click <span className="text-accent font-semibold">Run Analysis</span>.
       </p>
-      <div className="grid grid-cols-3 gap-4 mt-6 text-left max-w-2xl">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 mt-6 text-left max-w-3xl">
         {[
-          ["📈", "Factor Analysis", "FF5 + Momentum regressions with per-stock breakdowns"],
-          ["🏭", "Industry", "Sector ETF regression to find your sector tilts"],
-          ["🔗", "Covariance", "Correlation matrix and risk contribution by stock"],
-          ["📉", "Analytics", "Sharpe, Sortino, VaR, drawdown vs S&P 500"],
-          ["🛡️", "Hedges", "Exact ETF positions to neutralise factor exposure"],
-          ["📋", "Trade Log", "Persistent trade history with live P&L"],
-        ].map(([icon, title, desc]) => (
-          <div key={title as string} className="bg-card border border-border rounded-xl p-4">
-            <div className="text-2xl mb-2">{icon}</div>
+          ["Factor Analysis", "FF5 + Momentum regressions with per-stock breakdowns"],
+          ["Industry", "Sector ETF regression to find your sector tilts"],
+          ["Covariance", "Correlation matrix and risk contribution by stock"],
+          ["Analytics", "Sharpe, Sortino, VaR, drawdown vs S&P 500"],
+          ["Hedges", "Exact ETF positions to neutralise factor exposure"],
+          ["Optimizer", "Mean-variance optimisation to maximise Sharpe ratio"],
+          ["Trade Log", "Persistent trade history with live P&L"],
+        ].map(([title, desc]) => (
+          <div key={title as string} className="bg-card border border-border rounded-xl p-4 hover:border-accent/40 transition-colors">
             <div className="font-semibold text-txt text-sm mb-1">{title}</div>
-            <div className="text-txt2 text-xs">{desc}</div>
+            <div className="text-txt2 text-xs leading-relaxed">{desc}</div>
           </div>
         ))}
       </div>

@@ -60,9 +60,30 @@ export type HedgeRow = {
   notional: number; current_price: number | null; approx_shares: number | null;
 };
 
+export type OptimizeResult = {
+  optimal_weights: Record<string, number>;
+  current_weights: Record<string, number>;
+  expected_return: number;
+  expected_vol: number;
+  expected_sharpe: number;
+  current_expected_return: number;
+  current_expected_vol: number;
+  current_expected_sharpe: number;
+  portfolio_value: number;
+  adjustments: Record<string, {
+    current_pct: number;
+    optimal_pct: number;
+    current_dollars: number;
+    optimal_dollars: number;
+    delta_dollars: number;
+    action: string;
+  }>;
+};
+
 export const api = {
   analyze:        (b: object) => post<AnalysisResult>("/analyze", b),
   hedges:         (b: object) => post<{ factor_hedges: HedgeRow[]; industry_hedges: HedgeRow[] }>("/hedges", b),
+  optimize:       (b: object) => post<OptimizeResult>("/optimize", b),
   getTrades:      ()          => get<Trade[]>("/trades"),
   addTrade:       (b: object) => post("/trades", b),
   deleteTrade:    (id: number) => del(`/trades/${id}`),

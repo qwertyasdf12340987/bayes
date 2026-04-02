@@ -24,6 +24,7 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 import requests
+from scipy.optimize import minimize
 import statsmodels.api as sm
 import yfinance as yf
 
@@ -394,6 +395,66 @@ class PortfolioAnalyzer:
         port_var = self.weights @ cov.values @ self.weights
         mrc = (cov.values @ self.weights) * self.weights / port_var
         return pd.Series(mrc, index=self.tickers, name="Risk Contribution")
+
+    # ------------------------------------------------------------------
+    # Mean-variance optimisation (max Sharpe)
+    # ------------------------------------------------------------------
+
+    def optimize_weights(
+        self,
+        expected_returns: Dict[str, float],
+        risk_free_rate: float = 0.0,
+        long_only: bool = True,
+        max_position: float = 0.40,
+    ) -> dict:
+        """Find weights that maximise the Sharpe ratio given predicted returns."""
+        mu = np.array([expected_returns[t] for t in self.tickers])
+        cov = self.covariance_matrix(annualized=True).values
+        n = len(self.tickers)
+
+        if n == 1:
+            return {
+                "optimal_weights": {self.tickers[0]: 1.0},
+                "current_weights": {self.tickers[0]: float(self.weights[0])},
+                "expected_return": float(mu[0]),
+                "expected_vol": float(np.sqrt(cov[0, 0])),
+                "expected_sharpe": float((mu[0] - risk_free_rate) / np.sqrt(cov[0, 0])) if cov[0, 0] > 0 else 0.0,
+                "current_expected_return": float(mu[0]),
+                "current_expected_vol": float(np.sqrt(cov[0, 0])),
+                "current_expected_sharpe": float((mu[0] - risk_free_rate) / np.sqrt(cov[0, 0])) if cov[0, 0] > 0 else 0.0,
+            }
+
+        def neg_sharpe(w):
+            port_ret = w @ mu
+            port_vol = np.sqrt(w @ cov @ w)
+            if port_vol < 1e-10:
+                return 1e6
+            return -(port_ret - risk_free_rate) / port_vol
+
+        bounds = [(0.0, max_position) if long_only else (-max_position, max_position)] * n
+        constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
+        x0 = np.ones(n) / n
+
+        res = minimize(neg_sharpe, x0, method="SLSQP", bounds=bounds, constraints=constraints)
+        if not res.success:
+            raise ValueError(f"Optimisation did not converge: {res.message}")
+
+        opt_w = res.x
+        cur_ret = float(self.weights @ mu)
+        cur_vol = float(np.sqrt(self.weights @ cov @ self.weights))
+        opt_ret = float(opt_w @ mu)
+        opt_vol = float(np.sqrt(opt_w @ cov @ opt_w))
+
+        return {
+            "optimal_weights": {t: float(opt_w[i]) for i, t in enumerate(self.tickers)},
+            "current_weights": {t: float(self.weights[i]) for i, t in enumerate(self.tickers)},
+            "expected_return": opt_ret,
+            "expected_vol": opt_vol,
+            "expected_sharpe": float((opt_ret - risk_free_rate) / opt_vol) if opt_vol > 1e-10 else 0.0,
+            "current_expected_return": cur_ret,
+            "current_expected_vol": cur_vol,
+            "current_expected_sharpe": float((cur_ret - risk_free_rate) / cur_vol) if cur_vol > 1e-10 else 0.0,
+        }
 
     # ------------------------------------------------------------------
     # Performance analytics

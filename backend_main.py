@@ -73,6 +73,17 @@ class HedgeReq(BaseModel):
     include_industry: bool = True
 
 
+class OptimizeReq(BaseModel):
+    tickers: List[str]
+    weights: List[float]
+    start_date: str
+    end_date: str
+    expected_returns: dict
+    risk_free_rate: float = 0.0
+    long_only: bool = True
+    max_position: float = 0.40
+
+
 class TradeReq(BaseModel):
     ticker: str
     trade_date: str
@@ -147,6 +158,43 @@ def hedges(req: HedgeReq):
     except Exception as e:
         tb = traceback.format_exc()
         print(f"ERROR in /hedges:\n{tb}")
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
+
+
+# ── Optimiser ─────────────────────────────────────────────────────────────────
+@app.post("/optimize")
+def optimize(req: OptimizeReq):
+    try:
+        a = PortfolioAnalyzer(
+            req.tickers, req.weights,
+            req.start_date, req.end_date, "monthly",
+        )
+        a.fetch_prices()
+        result = a.optimize_weights(
+            expected_returns=req.expected_returns,
+            risk_free_rate=req.risk_free_rate,
+            long_only=req.long_only,
+            max_position=req.max_position,
+        )
+        total = sum(req.weights)
+        adjustments = {}
+        for t in req.tickers:
+            cur_d = result["current_weights"][t] * total
+            opt_d = result["optimal_weights"][t] * total
+            adjustments[t] = {
+                "current_pct": result["current_weights"][t],
+                "optimal_pct": result["optimal_weights"][t],
+                "current_dollars": cur_d,
+                "optimal_dollars": opt_d,
+                "delta_dollars": opt_d - cur_d,
+                "action": "BUY" if opt_d > cur_d + 0.01 else "SELL" if cur_d > opt_d + 0.01 else "HOLD",
+            }
+        result["adjustments"] = adjustments
+        result["portfolio_value"] = total
+        return result
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"ERROR in /optimize:\n{tb}")
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
 
 
