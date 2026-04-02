@@ -34,7 +34,7 @@ def _yf_download(*args, **kwargs) -> pd.DataFrame:
     """Wrapper around yf.download that always returns flat (non-MultiIndex) columns.
     Newer yfinance versions return MultiIndex columns even for a single ticker,
     which breaks code that expects raw["Close"] to be a Series."""
-    df = _yf_download(*args, **kwargs)
+    df = yf.download(*args, **kwargs)
     if isinstance(df.columns, pd.MultiIndex):
         if df.columns.get_level_values(1).nunique() == 1:
             # Single ticker — drop the ticker level so columns are just ["Close","Open",…]
