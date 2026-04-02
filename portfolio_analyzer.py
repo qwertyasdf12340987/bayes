@@ -30,6 +30,18 @@ import yfinance as yf
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 
+def _yf_download(*args, **kwargs) -> pd.DataFrame:
+    """Wrapper around yf.download that always returns flat (non-MultiIndex) columns.
+    Newer yfinance versions return MultiIndex columns even for a single ticker,
+    which breaks code that expects raw["Close"] to be a Series."""
+    df = _yf_download(*args, **kwargs)
+    if isinstance(df.columns, pd.MultiIndex):
+        if df.columns.get_level_values(1).nunique() == 1:
+            # Single ticker — drop the ticker level so columns are just ["Close","Open",…]
+            df.columns = df.columns.droplevel(1)
+    return df
+
+
 # ---------------------------------------------------------------------------
 # Sector ETFs used as industry factor proxies
 # ---------------------------------------------------------------------------
@@ -159,7 +171,7 @@ class PortfolioAnalyzer:
     def fetch_prices(self) -> pd.DataFrame:
         """Download adjusted close prices for all tickers via yfinance."""
         print(f"Fetching prices for: {', '.join(self.tickers)} ...")
-        raw = yf.download(
+        raw = _yf_download(
             self.tickers,
             start=self.start_date,
             end=self.end_date,
@@ -228,7 +240,7 @@ class PortfolioAnalyzer:
         """Download sector ETF returns for industry exposure analysis."""
         tickers = list(SECTOR_ETFS.values())
         print(f"Fetching sector ETF data ({len(tickers)} sectors) ...")
-        raw = yf.download(
+        raw = _yf_download(
             tickers,
             start=self.start_date,
             end=self.end_date,
@@ -462,7 +474,7 @@ class PortfolioAnalyzer:
 
     def benchmark_returns(self, benchmark: str = "SPY") -> pd.Series:
         """Fetch and return the benchmark's periodic returns."""
-        raw = yf.download(benchmark, start=self.start_date, end=self.end_date,
+        raw = _yf_download(benchmark, start=self.start_date, end=self.end_date,
                           auto_adjust=True, progress=False)
         daily = raw["Close"].pct_change().dropna()
         if self.frequency == "monthly":
@@ -569,7 +581,7 @@ class PortfolioAnalyzer:
         hedge_tickers = list(set(self.HEDGE_ETFS.values()))
 
         # Download hedge ETF price data and compute their FF betas
-        raw = yf.download(hedge_tickers, start=self.start_date, end=self.end_date,
+        raw = _yf_download(hedge_tickers, start=self.start_date, end=self.end_date,
                           auto_adjust=True, progress=False)
         if len(hedge_tickers) == 1:
             etf_prices = raw[["Close"]].rename(columns={"Close": hedge_tickers[0]})
@@ -623,7 +635,7 @@ class PortfolioAnalyzer:
             # Fetch current price for share count estimate
             try:
                 current_px = float(
-                    yf.download(hedge_etf, period="1d", progress=False)["Close"].iloc[-1]
+                    _yf_download(hedge_etf, period="1d", progress=False)["Close"].iloc[-1]
                 )
                 shares = abs(notional) / current_px
             except Exception:
@@ -656,7 +668,7 @@ class PortfolioAnalyzer:
                 direction = "BUY" if notional > 0 else "SHORT"
                 try:
                     current_px = float(
-                        yf.download(etf, period="1d", progress=False)["Close"].iloc[-1]
+                        _yf_download(etf, period="1d", progress=False)["Close"].iloc[-1]
                     )
                     shares = abs(notional) / current_px
                 except Exception:

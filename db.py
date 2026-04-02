@@ -10,6 +10,16 @@ from pathlib import Path
 from typing import List, Tuple
 
 import pandas as pd
+import yfinance as yf
+
+
+def _yf_download(*args, **kwargs) -> pd.DataFrame:
+    """Wrapper that flattens MultiIndex columns from newer yfinance versions."""
+    df = yf.download(*args, **kwargs)
+    if isinstance(df.columns, pd.MultiIndex):
+        if df.columns.get_level_values(1).nunique() == 1:
+            df.columns = df.columns.droplevel(1)
+    return df
 
 SQLITE_PATH = Path(__file__).parent / "trades.db"
 
@@ -189,15 +199,13 @@ class TradeDB:
           Ticker, Net Qty, Avg Cost, Current Price, Market Value,
           Unrealized P&L, Unrealized P&L %
         """
-        import yfinance as yf
-
         positions = self.get_positions_summary()
         if positions.empty:
             return pd.DataFrame()
 
         tickers = positions["Ticker"].tolist()
         try:
-            raw = yf.download(tickers, period="1d", auto_adjust=True, progress=False)
+            raw = _yf_download(tickers, period="1d", auto_adjust=True, progress=False)
             if len(tickers) == 1:
                 prices = {tickers[0]: float(raw["Close"].iloc[-1])}
             else:
@@ -236,8 +244,6 @@ class TradeDB:
         Downloads price history for all ever-held tickers.
         Returns a Series of total portfolio value indexed by date.
         """
-        import yfinance as yf
-
         trades = self.get_trades()
         if trades.empty:
             return pd.Series(dtype=float, name="Portfolio Value")
@@ -247,7 +253,7 @@ class TradeDB:
         start = trades["trade_date"].min().strftime("%Y-%m-%d")
 
         # Download daily prices for all tickers
-        raw = yf.download(all_tickers, start=start, auto_adjust=True, progress=False)
+        raw = _yf_download(all_tickers, start=start, auto_adjust=True, progress=False)
         if len(all_tickers) == 1:
             prices = raw[["Close"]].rename(columns={"Close": all_tickers[0]})
         else:
