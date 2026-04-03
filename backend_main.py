@@ -15,7 +15,16 @@ from fastapi import Depends, FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from auth import create_token, hash_password, require_user, verify_password
+try:
+    from auth import create_token, hash_password, require_user, verify_password
+    _AUTH_AVAILABLE = True
+except ImportError:
+    _AUTH_AVAILABLE = False
+    def require_user(*a, **kw): raise HTTPException(503, "Auth not available — install python-jose and passlib")
+    def create_token(*a, **kw): return ""
+    def hash_password(p): return p
+    def verify_password(p, h): return p == h
+
 from db import TradeDB
 from portfolio_analyzer import PortfolioAnalyzer
 
@@ -85,6 +94,8 @@ class OptimizeReq(BaseModel):
     risk_free_rate: float = 0.0
     long_only: bool = True
     max_position: float = 0.40
+    use_shrinkage: bool = True
+    max_risk_contribution: Optional[float] = None
 
 
 class SimulateReq(BaseModel):
@@ -226,13 +237,17 @@ def analyze(req: AnalyzeReq):
             "stock_returns": {t: _series(a.returns[t]) for t in req.tickers},
             "benchmark":     _series(bench),
             "rolling_betas": _df(rolling) if not rolling.empty else [],
-            "sharpe":        a.sharpe_ratio(),
-            "sortino":       a.sortino_ratio(),
-            "max_drawdown":  mdd["max_drawdown"],
-            "calmar":        a.calmar_ratio(),
-            "var95":         a.var(0.95),
-            "cvar95":        a.cvar(0.95),
-            "ann_return":    a.annualised_return(),
+            "sharpe":           a.sharpe_ratio(),
+            "sortino":          a.sortino_ratio(),
+            "max_drawdown":     mdd["max_drawdown"],
+            "calmar":           a.calmar_ratio(),
+            "var95":            a.var(0.95),
+            "cvar95":           a.cvar(0.95),
+            "ann_return":       a.annualised_return(),
+            "active_return":    a.active_return("SPY"),
+            "tracking_error":   a.tracking_error("SPY"),
+            "information_ratio": a.information_ratio("SPY"),
+            "risk_decomp":      a.risk_decomposition(),
         }
     except Exception as e:
         tb = traceback.format_exc()
@@ -271,6 +286,8 @@ def optimize(req: OptimizeReq):
             risk_free_rate=req.risk_free_rate,
             long_only=req.long_only,
             max_position=req.max_position,
+            use_shrinkage=req.use_shrinkage,
+            max_risk_contribution=req.max_risk_contribution,
         )
         total = sum(req.weights)
         adjustments = {}
@@ -278,15 +295,36 @@ def optimize(req: OptimizeReq):
             cur_d = result["current_weights"][t] * total
             opt_d = result["optimal_weights"][t] * total
             adjustments[t] = {
-                "current_pct": result["current_weights"][t],
-                "optimal_pct": result["optimal_weights"][t],
+                "current_pct":    result["current_weights"][t],
+                "optimal_pct":    result["optimal_weights"][t],
                 "current_dollars": cur_d,
                 "optimal_dollars": opt_d,
-                "delta_dollars": opt_d - cur_d,
+                "delta_dollars":   opt_d - cur_d,
                 "action": "BUY" if opt_d > cur_d + 0.01 else "SELL" if cur_d > opt_d + 0.01 else "HOLD",
             }
-        result["adjustments"] = adjustments
+        result["adjustments"]    = adjustments
         result["portfolio_value"] = total
+
+        # ── FLAM: Grinold-Kahn Fundamental Law (Paleologo Ch. 6) ─────
+        ppy = 12
+        realized = {
+            t: float((1 + a.returns[t].mean()) ** ppy - 1)
+            for t in req.tickers
+        }
+        pred_vals     = np.array([req.expected_returns[t] for t in req.tickers])
+        realized_vals = np.array([realized[t]             for t in req.tickers])
+        if len(req.tickers) >= 2 and pred_vals.std() > 0 and realized_vals.std() > 0:
+            ic = float(np.corrcoef(pred_vals, realized_vals)[0, 1])
+        else:
+            ic = 0.0
+        breadth    = len(req.tickers) * ppy   # independent bets / year
+        ir_implied = ic * np.sqrt(breadth)
+        result["flam"] = {
+            "ic":               ic,
+            "breadth":          breadth,
+            "ir_implied":       ir_implied,
+            "realized_returns": realized,
+        }
         return result
     except Exception as e:
         tb = traceback.format_exc()

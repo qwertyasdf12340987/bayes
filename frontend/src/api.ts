@@ -58,6 +58,12 @@ export type AnalysisResult = {
   rolling_betas: { date: string; [key: string]: number | string }[];
   sharpe: number; sortino: number; max_drawdown: number;
   calmar: number; var95: number; cvar95: number; ann_return: number;
+  active_return: number; tracking_error: number; information_ratio: number;
+  risk_decomp: {
+    systematic_pct: number; specific_pct: number;
+    systematic_vol: number; specific_vol: number; total_vol: number;
+    per_stock_specific: Record<string, number>;
+  };
 };
 
 export type Trade = {
@@ -88,13 +94,14 @@ export type OptimizeResult = {
   current_expected_sharpe: number;
   portfolio_value: number;
   adjustments: Record<string, {
-    current_pct: number;
-    optimal_pct: number;
-    current_dollars: number;
-    optimal_dollars: number;
-    delta_dollars: number;
-    action: string;
+    current_pct: number; optimal_pct: number;
+    current_dollars: number; optimal_dollars: number;
+    delta_dollars: number; action: string;
   }>;
+  flam?: {
+    ic: number; breadth: number; ir_implied: number;
+    realized_returns: Record<string, number>;
+  };
 };
 
 export type SimulateResult = {

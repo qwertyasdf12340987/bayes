@@ -396,6 +396,106 @@ class PortfolioAnalyzer:
         mrc = (cov.values @ self.weights) * self.weights / port_var
         return pd.Series(mrc, index=self.tickers, name="Risk Contribution")
 
+    def risk_decomposition(self) -> dict:
+        """
+        Decomposes total portfolio variance into systematic (factor) risk
+        and specific (idiosyncratic) risk.  Paleologo, Ch. 3-4.
+
+        σ²_total = β_p' Σ_F β_p + Σ_i w_i² σ²_ε,i
+
+        where β_p = weighted-avg per-stock factor betas,
+              Σ_F = annualised factor covariance matrix,
+              σ²_ε,i = per-stock residual (idiosyncratic) variance.
+        """
+        if self._ff_factors is None:
+            self.fetch_ff_factors(include_momentum=True)
+
+        ff      = self._ff_factors.copy()
+        factors = [c for c in ["Mkt-RF", "SMB", "HML", "RMW", "CMA", "MOM"]
+                   if c in ff.columns]
+        ppy = self._periods_per_year()
+
+        def _to_eom(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
+            return idx.to_period("M").to_timestamp("M")
+
+        stock_rets = self.returns.copy()
+        stock_rets.index = _to_eom(stock_rets.index)
+
+        stock_betas: dict   = {}
+        residual_vars: dict = {}
+
+        for ticker in self.tickers:
+            excess = stock_rets[ticker] - ff["RF"]
+            data   = pd.concat([excess, ff[factors]], axis=1).dropna()
+            if len(data) < len(factors) + 2:
+                stock_betas[ticker]    = np.zeros(len(factors))
+                residual_vars[ticker]  = 0.0
+                continue
+            y_fit = data.iloc[:, 0]
+            X_fit = sm.add_constant(data.iloc[:, 1:])
+            m     = sm.OLS(y_fit, X_fit).fit()
+            stock_betas[ticker]   = m.params.drop("const").values
+            residual_vars[ticker] = float(m.mse_resid)
+
+        # Portfolio factor betas = weighted sum of per-stock betas
+        port_betas = np.zeros(len(factors))
+        for i, t in enumerate(self.tickers):
+            port_betas += self.weights[i] * stock_betas[t]
+
+        # Factor covariance (annualised)
+        factor_data = ff[factors].dropna()
+        factor_cov  = factor_data.cov().values * ppy
+
+        systematic_var = float(port_betas @ factor_cov @ port_betas)
+        specific_var   = float(sum(
+            self.weights[i] ** 2 * residual_vars[t] * ppy
+            for i, t in enumerate(self.tickers)
+        ))
+        total_var = systematic_var + specific_var
+
+        per_stock_specific_pct = {
+            t: float(self.weights[i] ** 2 * residual_vars[t] * ppy / total_var * 100)
+            if total_var > 0 else 0.0
+            for i, t in enumerate(self.tickers)
+        }
+
+        return {
+            "systematic_var":      systematic_var,
+            "specific_var":        specific_var,
+            "total_var":           total_var,
+            "systematic_pct":      float(systematic_var / total_var * 100) if total_var > 0 else 0.0,
+            "specific_pct":        float(specific_var  / total_var * 100) if total_var > 0 else 0.0,
+            "systematic_vol":      float(np.sqrt(max(systematic_var, 0))),
+            "specific_vol":        float(np.sqrt(max(specific_var,   0))),
+            "total_vol":           float(np.sqrt(max(total_var,       0))),
+            "per_stock_specific":  per_stock_specific_pct,
+        }
+
+    # Active-risk metrics (Paleologo Ch. 5)
+
+    def active_return(self, benchmark: str = "SPY") -> float:
+        """Annualised mean excess return vs benchmark (active return)."""
+        bench = self.benchmark_returns(benchmark)
+        port  = self.portfolio_returns.copy()
+        aligned = pd.concat([port, bench], axis=1).dropna()
+        active  = aligned.iloc[:, 0] - aligned.iloc[:, 1]
+        ppy = self._periods_per_year()
+        return float((1 + active.mean()) ** ppy - 1)
+
+    def tracking_error(self, benchmark: str = "SPY") -> float:
+        """Annualised std dev of portfolio-minus-benchmark returns."""
+        bench = self.benchmark_returns(benchmark)
+        port  = self.portfolio_returns.copy()
+        aligned = pd.concat([port, bench], axis=1).dropna()
+        active  = aligned.iloc[:, 0] - aligned.iloc[:, 1]
+        ppy = self._periods_per_year()
+        return float(active.std() * np.sqrt(ppy))
+
+    def information_ratio(self, benchmark: str = "SPY") -> float:
+        """Active return / tracking error (Paleologo Ch. 5)."""
+        te = self.tracking_error(benchmark)
+        return float(self.active_return(benchmark) / te) if te > 1e-10 else 0.0
+
     # ------------------------------------------------------------------
     # Mean-variance optimisation (max Sharpe)
     # ------------------------------------------------------------------
@@ -406,11 +506,36 @@ class PortfolioAnalyzer:
         risk_free_rate: float = 0.0,
         long_only: bool = True,
         max_position: float = 0.40,
+        use_shrinkage: bool = True,
+        max_risk_contribution: Optional[float] = None,
     ) -> dict:
-        """Find weights that maximise the Sharpe ratio given predicted returns."""
-        mu = np.array([expected_returns[t] for t in self.tickers])
-        cov = self.covariance_matrix(annualized=True).values
-        n = len(self.tickers)
+        """
+        Find weights that maximise the Sharpe ratio given predicted returns.
+
+        Parameters
+        ----------
+        use_shrinkage : bool
+            If True, use Ledoit-Wolf shrinkage estimator for the covariance
+            matrix (Paleologo Ch. 8). Reduces estimation error for small samples.
+        max_risk_contribution : float or None
+            If set (e.g. 0.40), no single stock may contribute more than this
+            fraction of total portfolio variance — a risk-budget constraint
+            (Paleologo Ch. 7).
+        """
+        mu  = np.array([expected_returns[t] for t in self.tickers])
+        n   = len(self.tickers)
+
+        # ── Covariance estimation ─────────────────────────────────────
+        ppy = self._periods_per_year()
+        if use_shrinkage and n > 1:
+            try:
+                from sklearn.covariance import LedoitWolf
+                lw  = LedoitWolf().fit(self.returns[self.tickers].dropna().values)
+                cov = lw.covariance_ * ppy
+            except ImportError:
+                cov = self.covariance_matrix(annualized=True).values
+        else:
+            cov = self.covariance_matrix(annualized=True).values
 
         if n == 1:
             return {
@@ -431,11 +556,22 @@ class PortfolioAnalyzer:
                 return 1e6
             return -(port_ret - risk_free_rate) / port_vol
 
-        bounds = [(0.0, max_position) if long_only else (-max_position, max_position)] * n
+        bounds      = [(0.0, max_position) if long_only else (-max_position, max_position)] * n
         constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
-        x0 = np.ones(n) / n
 
-        res = minimize(neg_sharpe, x0, method="SLSQP", bounds=bounds, constraints=constraints)
+        # Risk-budget constraint: w_i (Σw)_i ≤ max_rc · w'Σw  ∀ i
+        if max_risk_contribution is not None:
+            for idx in range(n):
+                constraints.append({
+                    "type": "ineq",
+                    "fun": (lambda w, i=idx:
+                            max_risk_contribution * float(w @ cov @ w)
+                            - float(w[i] * (cov @ w)[i])),
+                })
+
+        x0  = np.ones(n) / n
+        res = minimize(neg_sharpe, x0, method="SLSQP", bounds=bounds, constraints=constraints,
+                       options={"ftol": 1e-9, "maxiter": 1000})
         if not res.success:
             raise ValueError(f"Optimisation did not converge: {res.message}")
 
