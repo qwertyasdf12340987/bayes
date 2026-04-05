@@ -73,7 +73,7 @@ export type Trade = {
 
 export type Position = { Ticker: string; "Net Qty": number; "Avg Cost": number; "Cost Basis": number };
 export type PnLRow = {
-  Ticker: string; "Net Qty": number; "Avg Cost": number;
+  Ticker: string; Side: string; "Net Qty": number; "Avg Entry": number;
   "Current Price": number; "Market Value": number;
   "Unrealized P&L": number; "P&L %": number;
 };

@@ -134,16 +134,16 @@ class TradeDB:
     def add_trade(
         self,
         ticker: str,
-        trade_date,   # date or str
-        action: str,  # 'BUY' or 'SELL'
+        trade_date,
+        action: str,  # 'BUY' | 'SELL' | 'SHORT' | 'COVER'
         quantity: float,
         price: float,
         notes: str = "",
     ) -> None:
         ticker = ticker.upper().strip()
         action = action.upper()
-        if action not in ("BUY", "SELL"):
-            raise ValueError("action must be BUY or SELL")
+        if action not in ("BUY", "SELL", "SHORT", "COVER"):
+            raise ValueError("action must be BUY, SELL, SHORT, or COVER")
 
         if self._backend == "sqlite":
             with sqlite3.connect(SQLITE_PATH) as conn:
@@ -191,62 +191,76 @@ class TradeDB:
         else:
             self._sb.table("trades").delete().eq("id", trade_id).execute()
 
+    @staticmethod
+    def _signed_qty(action: str, quantity: float) -> float:
+        """BUY/COVER add shares; SELL/SHORT remove/short shares."""
+        return quantity if action in ("BUY", "COVER") else -quantity
+
     def get_portfolio(self) -> Tuple[List[str], List[float]]:
         """
-        Derive current open positions from trade history.
-        Returns (tickers, net_quantities) for positions whose net qty > 0.
-        Weights are net quantities; PortfolioAnalyzer normalises them.
+        Derive open positions from trade history.
+        Returns (tickers, abs_net_quantities) for ANY open position
+        (long or short). Weights are absolute quantities so PortfolioAnalyzer
+        can fetch prices — sign is tracked separately.
         """
         df = self.get_trades()
         if df.empty:
             return [], []
 
         df["signed"] = df.apply(
-            lambda r: r["quantity"] if r["action"] == "BUY" else -r["quantity"],
-            axis=1,
+            lambda r: self._signed_qty(r["action"], r["quantity"]), axis=1
         )
         net = df.groupby("ticker")["signed"].sum()
-        open_pos = net[net > 0.0001].sort_index()
-
-        return open_pos.index.tolist(), open_pos.values.tolist()
+        open_pos = net[net.abs() > 0.0001].sort_index()
+        return open_pos.index.tolist(), open_pos.abs().values.tolist()
 
     def get_positions_summary(self) -> pd.DataFrame:
         """
-        Return a table with ticker, net_qty, avg_cost, total_cost_basis.
-        Useful for the Trade Log tab display.
+        Returns open positions (long and short) with avg entry price.
+        Net Qty is positive for longs, negative for shorts.
         """
         df = self.get_trades()
         if df.empty:
-            return pd.DataFrame(columns=["Ticker", "Net Qty", "Avg Cost", "Cost Basis"])
+            return pd.DataFrame(columns=["Ticker", "Net Qty", "Avg Entry", "Cost Basis", "Side"])
 
         rows = []
         for ticker, group in df.groupby("ticker"):
-            buys  = group[group["action"] == "BUY"]
-            sells = group[group["action"] == "SELL"]
-            net_qty = buys["quantity"].sum() - sells["quantity"].sum()
-            if net_qty <= 0:
-                continue
-            avg_cost = (
-                (buys["quantity"] * buys["price"]).sum() / buys["quantity"].sum()
-                if len(buys) else 0.0
+            df["signed"] = df.apply(
+                lambda r: self._signed_qty(r["action"], r["quantity"]), axis=1
             )
+            signed = group.apply(
+                lambda r: self._signed_qty(r["action"], r["quantity"]), axis=1
+            )
+            net_qty = signed.sum()
+            if abs(net_qty) < 0.0001:
+                continue
+
+            # Avg entry: weighted avg of opening trades
+            if net_qty > 0:
+                opening = group[group["action"] == "BUY"]
+            else:
+                opening = group[group["action"] == "SHORT"]
+
+            avg_entry = (
+                (opening["quantity"] * opening["price"]).sum() / opening["quantity"].sum()
+                if len(opening) and opening["quantity"].sum() > 0 else 0.0
+            )
+            side = "LONG" if net_qty > 0 else "SHORT"
             rows.append({
-                "Ticker":      ticker,
-                "Net Qty":     round(net_qty, 4),
-                "Avg Cost":    round(avg_cost, 2),
-                "Cost Basis":  round(avg_cost * net_qty, 2),
+                "Ticker":     ticker,
+                "Net Qty":    round(net_qty, 4),
+                "Avg Entry":  round(avg_entry, 2),
+                "Cost Basis": round(avg_entry * abs(net_qty), 2),
+                "Side":       side,
             })
 
         return pd.DataFrame(rows).sort_values("Ticker").reset_index(drop=True)
 
     def get_unrealized_pnl(self) -> pd.DataFrame:
         """
-        Fetch live prices via yfinance and compute unrealized P&L for each
-        open position.
-
-        Returns a DataFrame with columns:
-          Ticker, Net Qty, Avg Cost, Current Price, Market Value,
-          Unrealized P&L, Unrealized P&L %
+        Unrealized P&L for all open positions (long and short).
+        - Long:  P&L = (current_price - avg_entry) * qty
+        - Short: P&L = (avg_entry - current_price) * abs(qty)
         """
         positions = self.get_positions_summary()
         if positions.empty:
@@ -265,24 +279,35 @@ class TradeDB:
 
         rows = []
         for _, row in positions.iterrows():
-            t       = row["Ticker"]
-            net_qty = float(row["Net Qty"])
-            avg_cost = float(row["Avg Cost"])
-            cur_px  = prices.get(t)
+            t         = row["Ticker"]
+            net_qty   = float(row["Net Qty"])
+            avg_entry = float(row["Avg Entry"])
+            side      = row["Side"]
+            cur_px    = prices.get(t)
             if cur_px is None:
                 continue
-            mkt_val  = net_qty * cur_px
-            cost_bas = net_qty * avg_cost
-            pnl      = mkt_val - cost_bas
-            pnl_pct  = pnl / cost_bas * 100 if cost_bas else 0
+
+            if side == "LONG":
+                mkt_val  = net_qty * cur_px
+                cost_bas = net_qty * avg_entry
+                pnl      = mkt_val - cost_bas
+                pnl_pct  = pnl / cost_bas * 100 if cost_bas else 0
+            else:  # SHORT — profit when price falls
+                abs_qty  = abs(net_qty)
+                mkt_val  = -abs_qty * cur_px          # mark-to-market (liability)
+                cost_bas = -abs_qty * avg_entry        # proceeds received at short sale
+                pnl      = cost_bas - mkt_val          # (avg_entry - cur_px) * abs_qty
+                pnl_pct  = pnl / (abs_qty * avg_entry) * 100 if avg_entry else 0
+
             rows.append({
-                "Ticker":          t,
-                "Net Qty":         net_qty,
-                "Avg Cost":        avg_cost,
-                "Current Price":   cur_px,
-                "Market Value":    mkt_val,
-                "Unrealized P&L":  pnl,
-                "P&L %":           pnl_pct,
+                "Ticker":         t,
+                "Side":           side,
+                "Net Qty":        net_qty,
+                "Avg Entry":      avg_entry,
+                "Current Price":  cur_px,
+                "Market Value":   mkt_val,
+                "Unrealized P&L": pnl,
+                "P&L %":          pnl_pct,
             })
 
         return pd.DataFrame(rows)
@@ -325,20 +350,20 @@ class TradeDB:
                 day_cmp = day.tz_localize(None) if day.tzinfo else day
                 if trade_ts <= day_cmp:
                     t  = row["ticker"]
-                    dq = row["quantity"] if row["action"] == "BUY" else -row["quantity"]
+                    dq = self._signed_qty(row["action"], row["quantity"])
                     holdings[t] = holdings.get(t, 0) + dq
                     trade_idx += 1
                 else:
                     break
 
-            # Compute portfolio value
+            # Compute portfolio value (shorts contribute negative market value)
             val = 0.0
             for t, qty in holdings.items():
-                if qty > 0 and t in prices.columns:
+                if abs(qty) > 0.0001 and t in prices.columns:
                     px = prices[t].get(day, float("nan"))
                     if not pd.isna(px):
-                        val += qty * px
-            if val > 0:
+                        val += qty * px   # negative for shorts
+            if val != 0:
                 port_values[day] = val
 
         return pd.Series(port_values, name="Portfolio Value")

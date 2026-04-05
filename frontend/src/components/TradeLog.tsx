@@ -7,6 +7,13 @@ type Props = { onLoad: (tickers: string[], weights: number[]) => void };
 
 const EMPTY = { ticker: "", trade_date: new Date().toISOString().split("T")[0], action: "BUY", quantity: "", price: "", notes: "" };
 
+const ACTION_STYLES: Record<string, string> = {
+  BUY:   "bg-accent/20 text-accent",
+  SELL:  "bg-neg/20 text-neg",
+  SHORT: "bg-orange-500/20 text-orange-400",
+  COVER: "bg-emerald-500/20 text-emerald-400",
+};
+
 export default function TradeLog({ onLoad }: Props) {
   const [trades, setTrades]   = useState<Trade[]>([]);
   const [pnl, setPnl]         = useState<PnLRow[]>([]);
@@ -104,37 +111,47 @@ export default function TradeLog({ onLoad }: Props) {
       {pnl.length > 0 && (
         <div className="bg-card border border-border rounded-2xl p-5">
           <div className="text-xs text-txt2 uppercase tracking-wider font-semibold mb-3">Open Positions</div>
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-txt2 text-xs uppercase tracking-wider border-b border-border">
-                {["Ticker", "Qty", "Avg Cost", "Price", "Mkt Value", "P&L", "P&L %"].map(h => (
-                  <th key={h} className={`pb-2 ${h === "Ticker" ? "text-left" : "text-right"}`}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {pnl.map(r => {
-                const pnlVal = r["Unrealized P&L"];
-                const pnlPct = r["P&L %"];
-                const cls = pnlVal >= 0 ? "text-pos" : "text-neg";
-                return (
-                  <tr key={r.Ticker} className="border-b border-border/40 hover:bg-card2/50">
-                    <td className="py-2 font-bold text-txt">{r.Ticker}</td>
-                    <td className="py-2 text-right tabular-nums text-txt2">{r["Net Qty"]}</td>
-                    <td className="py-2 text-right tabular-nums text-txt2">${r["Avg Cost"].toFixed(2)}</td>
-                    <td className="py-2 text-right tabular-nums text-txt">${r["Current Price"].toFixed(2)}</td>
-                    <td className="py-2 text-right tabular-nums text-txt">${r["Market Value"].toLocaleString("en-US", { maximumFractionDigits: 0 })}</td>
-                    <td className={`py-2 text-right tabular-nums font-semibold ${cls}`}>
-                      {pnlVal >= 0 ? "+" : ""}${pnlVal.toLocaleString("en-US", { maximumFractionDigits: 0 })}
-                    </td>
-                    <td className={`py-2 text-right tabular-nums font-semibold ${cls}`}>
-                      {pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(1)}%
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-txt2 text-xs uppercase tracking-wider border-b border-border">
+                  {["Ticker", "Side", "Qty", "Avg Entry", "Price", "Mkt Value", "P&L", "P&L %"].map(h => (
+                    <th key={h} className={`pb-2 ${h === "Ticker" ? "text-left" : "text-right"}`}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {pnl.map(r => {
+                  const pnlVal  = r["Unrealized P&L"];
+                  const pnlPct  = r["P&L %"];
+                  const cls     = pnlVal >= 0 ? "text-pos" : "text-neg";
+                  const isShort = r.Side === "SHORT";
+                  return (
+                    <tr key={r.Ticker} className="border-b border-border/40 hover:bg-card2/50">
+                      <td className="py-2 font-bold text-txt">{r.Ticker}</td>
+                      <td className="py-2 text-right">
+                        <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${isShort ? "bg-orange-500/20 text-orange-400" : "bg-accent/20 text-accent"}`}>
+                          {r.Side}
+                        </span>
+                      </td>
+                      <td className="py-2 text-right tabular-nums text-txt2">{Math.abs(r["Net Qty"])}</td>
+                      <td className="py-2 text-right tabular-nums text-txt2">${r["Avg Entry"].toFixed(2)}</td>
+                      <td className="py-2 text-right tabular-nums text-txt">${r["Current Price"].toFixed(2)}</td>
+                      <td className={`py-2 text-right tabular-nums ${isShort ? "text-orange-400" : "text-txt"}`}>
+                        {isShort ? "-" : ""}${Math.abs(r["Market Value"]).toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                      </td>
+                      <td className={`py-2 text-right tabular-nums font-semibold ${cls}`}>
+                        {pnlVal >= 0 ? "+" : ""}${Math.abs(pnlVal).toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                      </td>
+                      <td className={`py-2 text-right tabular-nums font-semibold ${cls}`}>
+                        {pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(1)}%
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
@@ -156,8 +173,10 @@ export default function TradeLog({ onLoad }: Props) {
             <label className="text-xs text-txt2">Action</label>
             <select value={form.action} onChange={e => setForm(f => ({ ...f, action: e.target.value }))}
               className="bg-card2 border border-border rounded-lg px-3 py-2 text-sm text-txt">
-              <option value="BUY">BUY</option>
-              <option value="SELL">SELL</option>
+              <option value="BUY">BUY — open long</option>
+              <option value="SELL">SELL — close long</option>
+              <option value="SHORT">SHORT — open short</option>
+              <option value="COVER">COVER — close short</option>
             </select>
           </div>
           <div className="flex flex-col gap-1">
@@ -194,7 +213,7 @@ export default function TradeLog({ onLoad }: Props) {
           <div className="flex flex-col gap-1 max-h-72 overflow-y-auto">
             {[...trades].reverse().map(t => (
               <div key={t.id} className="flex items-center justify-between gap-2 py-2 border-b border-border/30 hover:bg-card2/40 px-2 rounded">
-                <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${t.action === "BUY" ? "bg-accent/20 text-accent" : "bg-neg/20 text-neg"}`}>
+                <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${ACTION_STYLES[t.action] ?? "bg-card2 text-txt2"}`}>
                   {t.action}
                 </span>
                 <span className="font-semibold text-txt text-sm">{t.ticker}</span>
