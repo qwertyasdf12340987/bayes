@@ -151,7 +151,10 @@ class PortfolioAnalyzer:
             self.weights = np.ones(n) / n
         else:
             w = np.asarray(weights, dtype=float)
-            self.weights = w / w.sum()
+            # Normalise by sum of absolute values so signs are preserved
+            # (handles long-short portfolios where net sum may be near zero)
+            abs_sum = np.abs(w).sum()
+            self.weights = w / abs_sum if abs_sum > 1e-10 else w
 
         today = datetime.today()
         self.end_date   = end_date   or today.strftime("%Y-%m-%d")

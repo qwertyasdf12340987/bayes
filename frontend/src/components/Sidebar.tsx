@@ -22,7 +22,7 @@ const today = () => new Date().toISOString().split("T")[0];
 
 export default function Sidebar({ loading, setLoading, setResult, setParams, setError, setTab }: Props) {
   const [source, setSource] = useState<"manual" | "tradelog">("manual");
-  const [rows, setRows]     = useState([{ ticker: "AAPL", amount: 10000 }, { ticker: "MSFT", amount: 8000 }, { ticker: "NVDA", amount: 7000 }]);
+  const [rows, setRows]     = useState([{ ticker: "AAPL", amount: 10000, short: false }, { ticker: "MSFT", amount: 8000, short: false }, { ticker: "NVDA", amount: 7000, short: false }]);
   const [startDate, setStart] = useState(fiveYearsAgo());
   const [endDate, setEnd]     = useState(today());
   const [industry, setIndustry] = useState(true);
@@ -39,7 +39,7 @@ export default function Sidebar({ loading, setLoading, setResult, setParams, set
     ? rows.map(r => r.ticker.toUpperCase().trim()).filter(Boolean)
     : tlTickers;
   const weights = source === "manual"
-    ? rows.map(r => r.amount).filter((_, i) => rows[i].ticker.trim())
+    ? rows.filter(r => r.ticker.trim()).map(r => r.short ? -r.amount : r.amount)
     : tlWeights;
 
   async function run() {
@@ -85,21 +85,30 @@ export default function Sidebar({ loading, setLoading, setResult, setParams, set
         {source === "manual" ? (
           <div className="flex flex-col gap-2">
             <div className="text-xs text-txt2 font-semibold uppercase tracking-wider">Holdings</div>
-            <div className="grid grid-cols-2 gap-1 text-xs text-txt2 font-semibold px-1">
-              <span>Ticker</span><span>Amount ($)</span>
+            <div className="grid grid-cols-[1fr_1fr_auto] gap-1 text-xs text-txt2 font-semibold px-1">
+              <span>Ticker</span><span>Amount ($)</span><span>L/S</span>
             </div>
             {rows.map((row, i) => (
-              <div key={i} className="grid grid-cols-2 gap-1">
+              <div key={i} className="grid grid-cols-[1fr_1fr_auto] gap-1 items-center">
                 <input value={row.ticker} placeholder="AAPL"
                   onChange={e => setRows(r => r.map((x, j) => j === i ? { ...x, ticker: e.target.value } : x))}
-                  className="text-sm" />
+                  className={`text-sm ${row.short ? "border-orange-500/50" : ""}`} />
                 <input type="number" value={row.amount} min={0}
                   onChange={e => setRows(r => r.map((x, j) => j === i ? { ...x, amount: +e.target.value } : x))}
                   className="text-sm" />
+                <button
+                  onClick={() => setRows(r => r.map((x, j) => j === i ? { ...x, short: !x.short } : x))}
+                  className={`text-xs font-bold px-2 py-1.5 rounded-lg border transition-all ${
+                    row.short
+                      ? "bg-orange-500/20 text-orange-400 border-orange-500/40"
+                      : "text-txt2 border-border hover:border-accent/50 hover:text-accent"
+                  }`}>
+                  {row.short ? "S" : "L"}
+                </button>
               </div>
             ))}
             <div className="flex gap-2">
-              <button onClick={() => setRows(r => [...r, { ticker: "", amount: 0 }])}
+              <button onClick={() => setRows(r => [...r, { ticker: "", amount: 0, short: false }])}
                 className="flex-1 py-1.5 rounded-lg border border-border text-xs text-txt2 hover:border-accent hover:text-accent transition-all">
                 + Add row
               </button>
@@ -153,7 +162,7 @@ export default function Sidebar({ loading, setLoading, setResult, setParams, set
               startDate={startDate}
               endDate={endDate}
               onLoad={(p: SavedPortfolio) => {
-                setRows(p.tickers.map((t, i) => ({ ticker: t, amount: p.weights[i] ?? 1000 })));
+                setRows(p.tickers.map((t, i) => ({ ticker: t, amount: Math.abs(p.weights[i] ?? 1000), short: (p.weights[i] ?? 0) < 0 })));
                 if (p.start_date) setStart(p.start_date);
                 if (p.end_date) setEnd(p.end_date);
                 setSource("manual");
