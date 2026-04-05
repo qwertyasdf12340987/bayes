@@ -98,6 +98,17 @@ class OptimizeReq(BaseModel):
     max_risk_contribution: Optional[float] = None
 
 
+class KellyReq(BaseModel):
+    tickers: List[str]
+    weights: List[float]
+    start_date: str
+    end_date: str
+    expected_returns: dict
+    risk_free_rate: float = 0.0
+    fraction: float = 0.5
+    use_shrinkage: bool = True
+
+
 class SimulateReq(BaseModel):
     tickers: List[str]
     weights: List[float]
@@ -329,6 +340,27 @@ def optimize(req: OptimizeReq):
     except Exception as e:
         tb = traceback.format_exc()
         print(f"ERROR in /optimize:\n{tb}")
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
+
+
+# ── Kelly Criterion ──────────────────────────────────────────────────────────
+@app.post("/kelly")
+def kelly(req: KellyReq):
+    try:
+        a = PortfolioAnalyzer(
+            req.tickers, req.weights,
+            req.start_date, req.end_date, "monthly",
+        )
+        a.fetch_prices()
+        return a.kelly_criterion(
+            expected_returns=req.expected_returns,
+            risk_free_rate=req.risk_free_rate,
+            fraction=req.fraction,
+            use_shrinkage=req.use_shrinkage,
+        )
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"ERROR in /kelly:\n{tb}")
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
 
 

@@ -471,6 +471,101 @@ class PortfolioAnalyzer:
             "per_stock_specific":  per_stock_specific_pct,
         }
 
+    # ------------------------------------------------------------------
+    # Kelly Criterion
+    # ------------------------------------------------------------------
+
+    def kelly_criterion(
+        self,
+        expected_returns: Dict[str, float],
+        risk_free_rate: float = 0.0,
+        fraction: float = 1.0,
+        use_shrinkage: bool = True,
+    ) -> dict:
+        """
+        Compute Kelly-optimal position sizes for the portfolio.
+
+        The continuous (log-optimal) Kelly formula for multiple assets:
+            f* = Σ⁻¹ · (μ − r_f)
+
+        where Σ is the annualised covariance matrix and μ the vector of
+        expected annualised returns.  f* gives the fraction of wealth
+        to allocate to each asset; the sum can exceed 1 (implicit leverage).
+
+        Parameters
+        ----------
+        expected_returns : dict {ticker: annualised decimal return}
+        risk_free_rate   : annualised risk-free rate
+        fraction         : fractional Kelly multiplier (1=full, 0.5=half, etc.)
+        use_shrinkage    : use Ledoit-Wolf covariance if sklearn available
+
+        Returns
+        -------
+        dict with kelly_weights, fractional_weights, kelly_leverage,
+        kelly_growth_rate, current_growth_rate, per_stock detail
+        """
+        mu  = np.array([expected_returns[t] - risk_free_rate for t in self.tickers])
+        ppy = self._periods_per_year()
+        n   = len(self.tickers)
+
+        if use_shrinkage and n > 1:
+            try:
+                from sklearn.covariance import LedoitWolf
+                lw  = LedoitWolf().fit(self.returns[self.tickers].dropna().values)
+                cov = lw.covariance_ * ppy
+            except ImportError:
+                cov = self.covariance_matrix(annualized=True).values
+        else:
+            cov = self.covariance_matrix(annualized=True).values
+
+        # Full Kelly weights: Σ⁻¹ μ
+        try:
+            cov_inv = np.linalg.inv(cov)
+        except np.linalg.LinAlgError:
+            cov_inv = np.linalg.pinv(cov)
+
+        full_kelly = cov_inv @ mu                         # raw fractions (can be >1 or negative)
+        frac_kelly = full_kelly * fraction                # fractional Kelly
+
+        kelly_leverage  = float(np.sum(np.abs(frac_kelly)))
+        current_weights = self.weights
+
+        # Log-optimal growth rate: r_f + f'μ - ½ f'Σf
+        def growth_rate(w: np.ndarray) -> float:
+            return float(risk_free_rate + w @ mu - 0.5 * w @ cov @ w)
+
+        kelly_growth   = growth_rate(frac_kelly)
+        current_growth = growth_rate(current_weights)
+
+        # Normalised Kelly (rescaled to sum to 1, long-only clipped) for practical allocation
+        clipped = np.maximum(frac_kelly, 0.0)
+        norm_kelly = clipped / clipped.sum() if clipped.sum() > 1e-10 else current_weights.copy()
+
+        # Per-stock detail
+        per_stock = {}
+        for i, t in enumerate(self.tickers):
+            per_stock[t] = {
+                "full_kelly":        float(full_kelly[i]),
+                "fractional_kelly":  float(frac_kelly[i]),
+                "normalised_kelly":  float(norm_kelly[i]),
+                "current_weight":    float(current_weights[i]),
+                "expected_return":   float(expected_returns[t]),
+                "standalone_kelly":  float(mu[i] / cov[i, i]) if cov[i, i] > 0 else 0.0,
+            }
+
+        return {
+            "kelly_weights":      {t: float(full_kelly[i])  for i, t in enumerate(self.tickers)},
+            "fractional_weights": {t: float(frac_kelly[i])  for i, t in enumerate(self.tickers)},
+            "normalised_weights": {t: float(norm_kelly[i])  for i, t in enumerate(self.tickers)},
+            "current_weights":    {t: float(current_weights[i]) for i, t in enumerate(self.tickers)},
+            "fraction":           fraction,
+            "kelly_leverage":     kelly_leverage,
+            "kelly_growth_rate":  kelly_growth,
+            "current_growth_rate": current_growth,
+            "per_stock":          per_stock,
+            "use_shrinkage":      use_shrinkage,
+        }
+
     # Active-risk metrics (Paleologo Ch. 5)
 
     def active_return(self, benchmark: str = "SPY") -> float:

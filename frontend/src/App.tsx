@@ -7,6 +7,7 @@ import Covariance from "./components/Covariance";
 import Analytics from "./components/Analytics";
 import Hedges from "./components/Hedges";
 import Optimizer from "./components/Optimizer";
+import Kelly from "./components/Kelly";
 import Simulate from "./components/Simulate";
 import Backtest from "./components/Backtest";
 import Signals from "./components/Signals";
@@ -18,7 +19,7 @@ import { clearAuth, getUser } from "./auth";
 
 const TABS = [
   "Dashboard", "Factor Analysis", "Industry", "Covariance", "Analytics",
-  "Hedges", "Optimizer", "Simulate", "Backtest", "Signals", "Education", "Trade Log",
+  "Hedges", "Optimizer", "Kelly", "Simulate", "Backtest", "Signals", "Education", "Trade Log",
 ];
 
 export type PortfolioParams = {
@@ -124,9 +125,10 @@ export default function App() {
           {!loading && result && tab === 4  && <Analytics result={result} />}
           {!loading && result && tab === 5  && <Hedges result={result} params={params!} />}
           {!loading && result && tab === 6  && <Optimizer result={result} params={params!} />}
-          {!loading && result && tab === 7  && <Simulate params={params!} />}
-          {!loading && result && tab === 8  && <Backtest params={params!} />}
-          {!loading && result && tab === 9  && <Signals params={params!} />}
+          {!loading && result && tab === 7  && <Kelly result={result} params={params!} />}
+          {!loading && result && tab === 8  && <Simulate params={params!} />}
+          {!loading && result && tab === 9  && <Backtest params={params!} />}
+          {!loading && result && tab === 10 && <Signals params={params!} />}
           {!loading && tab === EDU_TAB      && <Education />}
           {!loading && tab === TRADE_TAB    && <TradeLog onLoad={(t, w) => {
             setParams(p => p ? { ...p, tickers: t, weights: w } : null);
@@ -165,6 +167,7 @@ function Landing() {
           ["Analytics", "Sharpe, Sortino, VaR, drawdown vs S&P 500"],
           ["Hedges", "ETF positions to neutralise factor exposure"],
           ["Optimizer", "Mean-variance optimisation to maximise Sharpe"],
+          ["Kelly", "Kelly Criterion log-optimal position sizing"],
           ["Simulate", "Monte Carlo simulation of portfolio outcomes"],
           ["Backtest", "Test rebalancing strategies against buy & hold"],
           ["Signals", "Fundamentals, analyst targets, options flow"],

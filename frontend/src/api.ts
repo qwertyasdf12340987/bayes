@@ -104,6 +104,21 @@ export type OptimizeResult = {
   };
 };
 
+export type KellyResult = {
+  kelly_weights:      Record<string, number>;
+  fractional_weights: Record<string, number>;
+  normalised_weights: Record<string, number>;
+  current_weights:    Record<string, number>;
+  fraction:           number;
+  kelly_leverage:     number;
+  kelly_growth_rate:  number;
+  current_growth_rate: number;
+  per_stock: Record<string, {
+    full_kelly: number; fractional_kelly: number; normalised_kelly: number;
+    current_weight: number; expected_return: number; standalone_kelly: number;
+  }>;
+};
+
 export type SimulateResult = {
   n_simulations: number;
   horizon_months: number;
@@ -177,6 +192,7 @@ export const api = {
   createPortfolio: (b: object) => post<SavedPortfolio>("/portfolios", b),
   updatePortfolio: (id: number, b: object) => put<SavedPortfolio>(`/portfolios/${id}`, b),
   deletePortfolio: (id: number) => del(`/portfolios/${id}`),
+  kelly:          (b: object) => post<KellyResult>("/kelly", b),
   analyze:        (b: object) => post<AnalysisResult>("/analyze", b),
   hedges:         (b: object) => post<{ factor_hedges: HedgeRow[]; industry_hedges: HedgeRow[] }>("/hedges", b),
   optimize:       (b: object) => post<OptimizeResult>("/optimize", b),
